@@ -1,0 +1,9 @@
+@echo off
+cd /d "%~dp0"
+echo 啟動 ngrok...
+start "ngrok" cmd /k "%~dp0ngrok.exe http 8000"
+echo 等待 ngrok 啟動...
+timeout /t 2 /nobreak >nul
+echo 啟動 Vault LINE Bot...
+python -m uvicorn main:app --host 0.0.0.0 --port 8000
+pause
