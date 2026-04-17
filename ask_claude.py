@@ -22,18 +22,24 @@ def ask_claude(prompt: str) -> str:
             "因為訊息會顯示在 LINE，Markdown 不會渲染。\n\n"
             "【使用者問題】\n" + prompt
         )
-        prompt_file.write_text(full_prompt, encoding="utf-8")
-        cmd = f'claude -p --output-format text < "{prompt_file}" > "{tmp}"'
+        node_cmd = r"C:\Program Files\nodejs\node.exe"
+        claude_js = r"C:\npm-global\node_modules\@anthropic-ai\claude-code\cli.js"
         result = subprocess.run(
-            cmd,
-            shell=True,
+            [node_cmd, claude_js, "-p", "--output-format", "text"],
+            input=full_prompt,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
             cwd=VAULT_DIR,
             timeout=120,
         )
         prompt_file.unlink(missing_ok=True)
-        output = tmp.read_text(encoding="utf-8", errors="ignore").strip() if tmp.exists() else ""
         tmp.unlink(missing_ok=True)
-        return output or f"（無輸出，return code={result.returncode}）"
+        output = (result.stdout or "").strip()
+        if not output:
+            err = (result.stderr or "").strip()[:500]
+            return f"（無輸出，return code={result.returncode}）\n{err}"
+        return output
     except subprocess.TimeoutExpired:
         return "逾時，請縮短問題後再試。"
     except FileNotFoundError:
