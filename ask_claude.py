@@ -1,14 +1,22 @@
 import subprocess
 import os
+from dotenv import load_dotenv
 
-VAULT_DIR = r"G:\MyDrive\my-vault"
+load_dotenv()
+
+VAULT_DIR = os.environ.get("VAULT_DIR", r"G:\MyDrive\my-vault")
+
+
+def _build_cmd() -> list:
+    claude_js = os.environ.get("CLAUDE_JS_PATH", "")
+    if claude_js:
+        node = os.environ.get("NODE_PATH", "node")
+        return [node, claude_js, "-p", "--output-format", "text"]
+    return ["claude", "-p", "--output-format", "text"]
 
 
 def ask_claude(prompt: str) -> str:
     try:
-        import tempfile, pathlib
-        tmp = pathlib.Path(tempfile.mktemp(suffix=".txt"))
-        prompt_file = pathlib.Path(tempfile.mktemp(suffix="_prompt.txt"))
         full_prompt = (
             "【查詢 vault 必須執行的步驟 - 不可省略】\n"
             "Step 1: Read 04_Knowledge/index.md 全文，找出與問題相關的知識頁面\n"
@@ -22,10 +30,8 @@ def ask_claude(prompt: str) -> str:
             "因為訊息會顯示在 LINE，Markdown 不會渲染。\n\n"
             "【使用者問題】\n" + prompt
         )
-        node_cmd = r"C:\Program Files\nodejs\node.exe"
-        claude_js = r"C:\npm-global\node_modules\@anthropic-ai\claude-code\cli.js"
         result = subprocess.run(
-            [node_cmd, claude_js, "-p", "--output-format", "text"],
+            _build_cmd(),
             input=full_prompt,
             capture_output=True,
             text=True,
@@ -33,8 +39,6 @@ def ask_claude(prompt: str) -> str:
             cwd=VAULT_DIR,
             timeout=120,
         )
-        prompt_file.unlink(missing_ok=True)
-        tmp.unlink(missing_ok=True)
         output = (result.stdout or "").strip()
         if not output:
             err = (result.stderr or "").strip()[:500]
