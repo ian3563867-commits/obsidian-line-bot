@@ -13,7 +13,8 @@ load_dotenv()
 
 CHANNEL_SECRET = os.environ["LINE_CHANNEL_SECRET"]
 CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
-ALLOWED_USER_ID = os.environ.get("LINE_ALLOWED_USER_ID", "")
+_raw = os.environ.get("LINE_ALLOWED_USER_IDS", os.environ.get("LINE_ALLOWED_USER_ID", ""))
+ALLOWED_USER_IDS = {uid.strip() for uid in _raw.split(",") if uid.strip()}
 
 app = FastAPI()
 
@@ -60,7 +61,8 @@ async def webhook(request: Request):
         user_text = event["message"]["text"].strip()
         reply_token = event["replyToken"]
 
-        if ALLOWED_USER_ID and user_id != ALLOWED_USER_ID:
+        if ALLOWED_USER_IDS and user_id not in ALLOWED_USER_IDS:
+            print(f"[BLOCKED] user_id={user_id}")
             continue
 
         reply_message(reply_token, "思考中，請稍候…")
