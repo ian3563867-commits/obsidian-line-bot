@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Request, HTTPException
 
 from ask_claude import ask_claude
+from ask_codex import ask_codex
 
 load_dotenv()
 
@@ -15,6 +16,7 @@ CHANNEL_SECRET = os.environ["LINE_CHANNEL_SECRET"]
 CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
 _raw = os.environ.get("LINE_ALLOWED_USER_IDS", os.environ.get("LINE_ALLOWED_USER_ID", ""))
 ALLOWED_USER_IDS = {uid.strip() for uid in _raw.split(",") if uid.strip()}
+AGENT_BACKEND = os.environ.get("AGENT_BACKEND", "claude").strip().lower()
 
 app = FastAPI()
 
@@ -39,6 +41,14 @@ def reply_message(reply_token: str, text: str):
         headers={"Authorization": f"Bearer {CHANNEL_ACCESS_TOKEN}"},
         json={"replyToken": reply_token, "messages": [{"type": "text", "text": text}]},
     )
+
+
+def ask_agent(prompt: str) -> str:
+    if AGENT_BACKEND == "claude":
+        return ask_claude(prompt)
+    if AGENT_BACKEND == "codex":
+        return ask_codex(prompt)
+    return f"未知 AGENT_BACKEND={AGENT_BACKEND}，請設定為 claude 或 codex。"
 
 
 @app.post("/webhook")
@@ -67,10 +77,10 @@ async def webhook(request: Request):
 
         reply_message(reply_token, "思考中，請稍候…")
 
-        def run_claude(uid=user_id, prompt=user_text):
-            answer = ask_claude(prompt)
+        def run_agent(uid=user_id, prompt=user_text):
+            answer = ask_agent(prompt)
             push_message(uid, answer)
 
-        threading.Thread(target=run_claude, daemon=True).start()
+        threading.Thread(target=run_agent, daemon=True).start()
 
     return "OK"
