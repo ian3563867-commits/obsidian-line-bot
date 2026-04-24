@@ -4,11 +4,16 @@ import hashlib
 import base64
 import re
 import threading
-from urllib.parse import parse_qs
+import html
+import time
+from datetime import datetime
+from urllib.parse import parse_qs, quote, urlencode
 
+import markdown
 import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import HTMLResponse
 
 from ask_claude import ask_claude
 from ask_codex import ask_codex
@@ -21,11 +26,28 @@ _raw = os.environ.get("LINE_ALLOWED_USER_IDS", os.environ.get("LINE_ALLOWED_USER
 ALLOWED_USER_IDS = {uid.strip() for uid in _raw.split(",") if uid.strip()}
 AGENT_BACKEND = os.environ.get("AGENT_BACKEND", "claude").strip().lower()
 VAULT_DIR = os.environ.get("VAULT_DIR", r"G:\MyDrive\my-vault")
-PROJECTS_DIR = os.path.join(VAULT_DIR, "02_Projects")
-PROJECTS_PER_PAGE = 8
-USER_MODES: dict[str, str] = {}
+KNOWLEDGE_DIR = os.path.join(VAULT_DIR, "04_Knowledge")
+DAILY_DIR = os.path.join(VAULT_DIR, "03_Daily")
+OBSIDIAN_VAULT_NAME = os.environ.get("OBSIDIAN_VAULT_NAME", os.path.basename(VAULT_DIR))
+OPEN_NOTE_BASE_URL = os.environ.get("OPEN_NOTE_BASE_URL", "").rstrip("/")
+KNOWLEDGE_ITEMS_PER_PAGE = 8
+KNOWLEDGE_NOTES_LIMIT = 5
+REPORT_MODE_TIMEOUT_SECONDS = 5 * 60
+USER_MODES: dict[str, dict] = {}
+LAST_REQUEST_BASE_URL = ""
 
 app = FastAPI()
+
+
+def post_line(url: str, payload: dict):
+    response = requests.post(
+        url,
+        headers={"Authorization": f"Bearer {CHANNEL_ACCESS_TOKEN}"},
+        json=payload,
+    )
+    if response.status_code >= 400:
+        print(f"[LINE API ERROR] status={response.status_code} body={response.text}")
+    return response
 
 
 def verify_signature(body: bytes, signature: str) -> bool:
@@ -35,26 +57,23 @@ def verify_signature(body: bytes, signature: str) -> bool:
 
 
 def push_message(user_id: str, text: str):
-    requests.post(
+    post_line(
         "https://api.line.me/v2/bot/message/push",
-        headers={"Authorization": f"Bearer {CHANNEL_ACCESS_TOKEN}"},
-        json={"to": user_id, "messages": [{"type": "text", "text": text[:5000]}]},
+        {"to": user_id, "messages": [{"type": "text", "text": text[:5000]}]},
     )
 
 
 def reply_message(reply_token: str, text: str):
-    requests.post(
+    post_line(
         "https://api.line.me/v2/bot/message/reply",
-        headers={"Authorization": f"Bearer {CHANNEL_ACCESS_TOKEN}"},
-        json={"replyToken": reply_token, "messages": [{"type": "text", "text": text}]},
+        {"replyToken": reply_token, "messages": [{"type": "text", "text": text}]},
     )
 
 
 def reply_messages(reply_token: str, messages: list[dict]):
-    requests.post(
+    post_line(
         "https://api.line.me/v2/bot/message/reply",
-        headers={"Authorization": f"Bearer {CHANNEL_ACCESS_TOKEN}"},
-        json={"replyToken": reply_token, "messages": messages},
+        {"replyToken": reply_token, "messages": messages},
     )
 
 
@@ -67,14 +86,101 @@ def ask_agent(prompt: str) -> str:
 
 
 def get_project_names() -> list[str]:
-    if not os.path.isdir(PROJECTS_DIR):
+    if not os.path.isdir(KNOWLEDGE_DIR):
         return []
     names = [
         entry.name
-        for entry in os.scandir(PROJECTS_DIR)
+        for entry in os.scandir(KNOWLEDGE_DIR)
         if entry.is_dir() and not entry.name.startswith(".")
     ]
     return sorted(names)
+
+
+def get_recent_markdown_notes(folder: str, limit: int = KNOWLEDGE_NOTES_LIMIT) -> list[str]:
+    if not os.path.isdir(folder):
+        return []
+    notes: list[tuple[float, str]] = []
+    for root, dirs, files in os.walk(folder):
+        dirs[:] = [name for name in dirs if not name.startswith(".")]
+        for name in files:
+            if name.lower().endswith(".md"):
+                path = os.path.join(root, name)
+                notes.append((os.path.getmtime(path), path))
+    return [path for _, path in sorted(notes, reverse=True)[:limit]]
+
+
+def build_obsidian_uri(path: str) -> str:
+    relative_path = os.path.relpath(path, VAULT_DIR).replace("\\", "/")
+    return (
+        "obsidian://open?"
+        + urlencode(
+            {
+                "vault": OBSIDIAN_VAULT_NAME,
+                "file": relative_path,
+            },
+            quote_via=quote,
+        )
+    )
+
+
+def build_note_open_url(path: str) -> str:
+    relative_path = os.path.relpath(path, VAULT_DIR).replace("\\", "/")
+    base_url = OPEN_NOTE_BASE_URL or LAST_REQUEST_BASE_URL.rstrip("/")
+    if not base_url:
+        return "https://example.com/"
+    return base_url + "/open-note?" + urlencode({"file": relative_path}, quote_via=quote)
+
+
+def get_today_daily_report_path() -> str:
+    today_name = datetime.now().strftime("%Y%m%d-daily-report.md")
+    today_path = os.path.join(DAILY_DIR, today_name)
+    return today_path if os.path.isfile(today_path) else ""
+
+
+def get_latest_daily_report_path() -> str:
+    if not os.path.isdir(DAILY_DIR):
+        return ""
+    notes = [
+        os.path.join(DAILY_DIR, name)
+        for name in os.listdir(DAILY_DIR)
+        if name.lower().endswith(".md")
+    ]
+    if not notes:
+        return ""
+    return max(notes, key=os.path.getmtime)
+
+
+def shorten_label(text: str, limit: int = 40) -> str:
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def strip_frontmatter(content: str) -> str:
+    if content.startswith("---\n"):
+        end = content.find("\n---", 4)
+        if end != -1:
+            return content[end + 4 :].lstrip()
+    return content
+
+
+def render_markdown(content: str) -> str:
+    return markdown.markdown(
+        strip_frontmatter(content),
+        extensions=[
+            "extra",
+            "sane_lists",
+            "nl2br",
+            "toc",
+        ],
+        output_format="html5",
+    )
+
+
+def get_request_base_url(request: Request) -> str:
+    forwarded_host = request.headers.get("x-forwarded-host")
+    forwarded_proto = request.headers.get("x-forwarded-proto", "https")
+    if forwarded_host:
+        return f"{forwarded_proto}://{forwarded_host}".rstrip("/")
+    return str(request.base_url).rstrip("/")
 
 
 def parse_postback(data: str) -> tuple[str, dict[str, str]]:
@@ -88,22 +194,42 @@ def build_home_text() -> str:
     return "請用下方 Rich Menu 操作，或直接輸入內容。"
 
 
+def set_user_mode(user_id: str, mode: str):
+    USER_MODES[user_id] = {"mode": mode, "started_at": time.time()}
+
+
+def clear_user_mode(user_id: str):
+    USER_MODES.pop(user_id, None)
+
+
+def get_user_mode(user_id: str) -> str:
+    state = USER_MODES.get(user_id)
+    if not state:
+        return ""
+    if state.get("mode") == "report":
+        started_at = float(state.get("started_at", 0))
+        if time.time() - started_at > REPORT_MODE_TIMEOUT_SECONDS:
+            clear_user_mode(user_id)
+            return ""
+    return str(state.get("mode", ""))
+
+
 def build_project_list_flex(page: int = 0) -> dict:
     projects = get_project_names()
     total = len(projects)
-    start = page * PROJECTS_PER_PAGE
-    end = start + PROJECTS_PER_PAGE
+    start = page * KNOWLEDGE_ITEMS_PER_PAGE
+    end = start + KNOWLEDGE_ITEMS_PER_PAGE
     page_items = projects[start:end]
     contents: list[dict] = [
         {
             "type": "text",
-            "text": "專案摘要",
+            "text": "Knowledge 摘要",
             "weight": "bold",
             "size": "xl",
         },
         {
             "type": "text",
-            "text": f"第 {page + 1} 頁，共 {max((total - 1) // PROJECTS_PER_PAGE + 1, 1)} 頁",
+            "text": f"第 {page + 1} 頁，共 {max((total - 1) // KNOWLEDGE_ITEMS_PER_PAGE + 1, 1)} 頁",
             "size": "sm",
             "color": "#666666",
             "margin": "md",
@@ -114,7 +240,7 @@ def build_project_list_flex(page: int = 0) -> dict:
         contents.append(
             {
                 "type": "text",
-                "text": "目前找不到專案資料夾。",
+                "text": "目前找不到 Knowledge 資料夾。",
                 "size": "md",
                 "margin": "lg",
                 "wrap": True,
@@ -142,8 +268,9 @@ def build_project_list_flex(page: int = 0) -> dict:
                             "action": {
                                 "type": "postback",
                                 "label": "查看摘要",
-                                "data": f"action=project_summary&project={name}",
-                                "displayText": f"查看專案：{name}",
+                                "data": "action=project_summary&"
+                                + urlencode({"project": name}, quote_via=quote),
+                                "displayText": f"查看知識：{name}",
                             },
                         },
                     ],
@@ -160,7 +287,7 @@ def build_project_list_flex(page: int = 0) -> dict:
                     "type": "postback",
                     "label": "上一頁",
                     "data": f"action=query_projects&page={page - 1}",
-                    "displayText": "查看上一頁專案",
+                    "displayText": "查看上一頁 Knowledge",
                 },
             }
         )
@@ -173,7 +300,7 @@ def build_project_list_flex(page: int = 0) -> dict:
                     "type": "postback",
                     "label": "下一頁",
                     "data": f"action=query_projects&page={page + 1}",
-                    "displayText": "查看下一頁專案",
+                    "displayText": "查看下一頁 Knowledge",
                 },
             }
         )
@@ -195,51 +322,334 @@ def build_project_list_flex(page: int = 0) -> dict:
         }
     return {
         "type": "flex",
-        "altText": "專案清單",
+        "altText": "Knowledge 清單",
         "contents": bubble,
     }
 
 
-def build_project_summary(project_name: str) -> str:
-    project_dir = os.path.join(PROJECTS_DIR, project_name)
-    if not os.path.isdir(project_dir):
-        return f"找不到專案：{project_name}"
+def build_project_summary(project_name: str) -> dict:
+    knowledge_folder = os.path.join(KNOWLEDGE_DIR, project_name)
+    if not os.path.isdir(knowledge_folder):
+        return {"type": "text", "text": f"找不到 Knowledge：{project_name}"}
 
-    note_names = sorted(
-        [
-            name
-            for name in os.listdir(project_dir)
-            if name.lower().endswith(".md")
-        ],
-        reverse=True,
-    )
-    recent_notes = note_names[:3]
-
-    lines = [
-        f"專案：{project_name}",
-        f"筆記數量：{len(note_names)}",
+    recent_notes = get_recent_markdown_notes(knowledge_folder)
+    contents: list[dict] = [
+        {
+            "type": "text",
+            "text": project_name,
+            "weight": "bold",
+            "size": "lg",
+            "wrap": True,
+        },
+        {
+            "type": "text",
+            "text": "最近 Knowledge 筆記",
+            "size": "sm",
+            "color": "#666666",
+            "margin": "sm",
+        },
     ]
-    if recent_notes:
-        lines.append("最近筆記：")
-        lines.extend([f"• {name[:-3]}" for name in recent_notes])
+    if not recent_notes:
+        contents.append(
+            {
+                "type": "text",
+                "text": "目前沒有 markdown 筆記",
+                "size": "md",
+                "margin": "lg",
+                "wrap": True,
+            }
+        )
     else:
-        lines.append("最近筆記：目前沒有 markdown 筆記")
-    return "\n".join(lines)
+        for path in recent_notes:
+            title = os.path.splitext(os.path.basename(path))[0]
+            contents.append(
+                {
+                    "type": "button",
+                    "style": "secondary",
+                    "height": "sm",
+                    "margin": "md",
+                    "action": {
+                        "type": "uri",
+                        "label": shorten_label(title),
+                        "uri": build_note_open_url(path),
+                    },
+                }
+            )
+
+    return {
+        "type": "flex",
+        "altText": f"{project_name} Knowledge 筆記",
+        "contents": {
+            "type": "bubble",
+            "body": {
+                "type": "box",
+                "layout": "vertical",
+                "contents": contents,
+            },
+        },
+    }
+
+
+def build_daily_report_message() -> dict:
+    today_path = get_today_daily_report_path()
+    latest_path = get_latest_daily_report_path()
+    if not today_path and not latest_path:
+        return {"type": "text", "text": "目前找不到 Daily Report。"}
+
+    target_path = today_path or latest_path
+    title = os.path.splitext(os.path.basename(target_path))[0]
+    status_text = "今日 Daily Report" if today_path else "今天尚未產生 Daily Report，先顯示最近一份。"
+    return {
+        "type": "flex",
+        "altText": "Daily Report",
+        "contents": {
+            "type": "bubble",
+            "body": {
+                "type": "box",
+                "layout": "vertical",
+                "spacing": "md",
+                "contents": [
+                    {
+                        "type": "text",
+                        "text": "Daily Report",
+                        "weight": "bold",
+                        "size": "xl",
+                    },
+                    {
+                        "type": "text",
+                        "text": status_text,
+                        "size": "sm",
+                        "color": "#666666",
+                        "wrap": True,
+                    },
+                    {
+                        "type": "text",
+                        "text": title,
+                        "size": "md",
+                        "wrap": True,
+                        "margin": "lg",
+                    },
+                ],
+            },
+            "footer": {
+                "type": "box",
+                "layout": "vertical",
+                "contents": [
+                    {
+                        "type": "button",
+                        "style": "primary",
+                        "action": {
+                            "type": "uri",
+                            "label": "開啟報告",
+                            "uri": build_note_open_url(target_path),
+                        },
+                    }
+                ],
+            },
+        },
+    }
+
+
+@app.get("/open-note")
+def open_note(file: str):
+    normalized = file.replace("\\", "/").lstrip("/")
+    target_path = os.path.abspath(os.path.join(VAULT_DIR, normalized))
+    vault_root = os.path.abspath(VAULT_DIR)
+    if not target_path.startswith(vault_root + os.sep) or not target_path.lower().endswith(".md"):
+        raise HTTPException(status_code=400, detail="Invalid file path")
+    if not os.path.isfile(target_path):
+        raise HTTPException(status_code=404, detail="Note not found")
+    with open(target_path, "r", encoding="utf-8") as f:
+        content = f.read()
+    title = os.path.splitext(os.path.basename(target_path))[0]
+    escaped_title = html.escape(title)
+    escaped_file = html.escape(normalized)
+    rendered_content = render_markdown(content)
+    return HTMLResponse(
+        f"""<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{escaped_title}</title>
+  <style>
+    body {{
+      margin: 0;
+      padding: 20px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.65;
+      color: #1f2933;
+      background: #f7f7f4;
+    }}
+    main {{
+      max-width: 860px;
+      margin: 0 auto;
+      background: #ffffff;
+      border: 1px solid #deded8;
+      border-radius: 8px;
+      padding: 18px;
+    }}
+    h1 {{
+      margin: 0 0 6px;
+      font-size: 22px;
+      line-height: 1.3;
+    }}
+    .path {{
+      margin: 0 0 18px;
+      color: #667085;
+      font-size: 13px;
+      word-break: break-all;
+    }}
+    .content {{
+      font-size: 16px;
+    }}
+    .content h1,
+    .content h2,
+    .content h3 {{
+      line-height: 1.3;
+      margin: 24px 0 10px;
+      color: #111827;
+    }}
+    .content h1 {{
+      font-size: 24px;
+      border-bottom: 1px solid #e5e7eb;
+      padding-bottom: 8px;
+    }}
+    .content h2 {{
+      font-size: 20px;
+    }}
+    .content h3 {{
+      font-size: 17px;
+    }}
+    .content p {{
+      margin: 10px 0;
+    }}
+    .content ul,
+    .content ol {{
+      padding-left: 22px;
+    }}
+    .content li {{
+      margin: 4px 0;
+    }}
+    .content table {{
+      width: 100%;
+      border-collapse: collapse;
+      margin: 14px 0;
+      display: block;
+      overflow-x: auto;
+    }}
+    .content th,
+    .content td {{
+      border: 1px solid #d0d5dd;
+      padding: 8px 10px;
+      vertical-align: top;
+    }}
+    .content th {{
+      background: #f3f4f6;
+      font-weight: 700;
+    }}
+    .content code {{
+      background: #f3f4f6;
+      border-radius: 4px;
+      padding: 2px 4px;
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      font-size: 0.92em;
+    }}
+    .content pre {{
+      background: #111827;
+      color: #f9fafb;
+      border-radius: 8px;
+      padding: 12px;
+      overflow-x: auto;
+    }}
+    .content pre code {{
+      background: transparent;
+      color: inherit;
+      padding: 0;
+    }}
+    .content blockquote {{
+      margin: 12px 0;
+      padding: 2px 14px;
+      border-left: 4px solid #98a2b3;
+      color: #475467;
+      background: #f9fafb;
+    }}
+    .content a {{
+      color: #2563eb;
+      text-decoration: none;
+    }}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>{escaped_title}</h1>
+    <p class="path">{escaped_file}</p>
+    <article class="content">{rendered_content}</article>
+  </main>
+</body>
+</html>"""
+    )
 
 
 def start_report_mode(reply_token: str, user_id: str):
-    USER_MODES[user_id] = "report"
+    set_user_mode(user_id, "report")
     reply_messages(
         reply_token,
         [
-            {"type": "text", "text": "已切換到問題回報模式，請直接輸入內容。"},
-            {"type": "text", "text": build_home_text()},
+            {
+                "type": "flex",
+                "altText": "問題回報模式",
+                "contents": {
+                    "type": "bubble",
+                    "body": {
+                        "type": "box",
+                        "layout": "vertical",
+                        "spacing": "md",
+                        "contents": [
+                            {
+                                "type": "text",
+                                "text": "問題回報模式",
+                                "weight": "bold",
+                                "size": "xl",
+                                "wrap": True,
+                            },
+                            {
+                                "type": "text",
+                                "text": "下一則文字會被記錄到 vault",
+                                "size": "sm",
+                                "color": "#666666",
+                                "wrap": True,
+                            },
+                            {
+                                "type": "text",
+                                "text": "請直接輸入要回報的問題內容。5 分鐘內未輸入會自動取消；若只是要查詢，請先取消回報。",
+                                "size": "md",
+                                "wrap": True,
+                                "margin": "lg",
+                            },
+                        ],
+                    },
+                    "footer": {
+                        "type": "box",
+                        "layout": "vertical",
+                        "spacing": "sm",
+                        "contents": [
+                            {
+                                "type": "button",
+                                "style": "secondary",
+                                "action": {
+                                    "type": "postback",
+                                    "label": "取消回報",
+                                    "data": "action=cancel_report",
+                                    "displayText": "取消回報",
+                                },
+                            },
+                        ],
+                    },
+                },
+            },
         ],
     )
-
-
-def clear_user_mode(user_id: str):
-    USER_MODES.pop(user_id, None)
 
 
 def run_agent_and_push(user_id: str, prompt: str):
@@ -287,6 +697,18 @@ def extract_saved_path(answer: str) -> str:
 
 def handle_postback(reply_token: str, user_id: str, data: str):
     action, params = parse_postback(data)
+    if action == "cancel_report":
+        clear_user_mode(user_id)
+        reply_message(reply_token, "已取消問題回報，回到一般查詢模式。")
+        return
+    if action == "direct_input":
+        clear_user_mode(user_id)
+        reply_message(reply_token, "已切換到直接輸入模式，請直接輸入查詢內容。")
+        return
+    if action == "daily_report":
+        clear_user_mode(user_id)
+        reply_messages(reply_token, [build_daily_report_message()])
+        return
     if action == "query_projects":
         clear_user_mode(user_id)
         page = int(params.get("page", "0") or 0)
@@ -305,7 +727,7 @@ def handle_postback(reply_token: str, user_id: str, data: str):
         reply_messages(
             reply_token,
             [
-                {"type": "text", "text": build_project_summary(project_name)},
+                build_project_summary(project_name),
                 {"type": "text", "text": build_home_text()},
             ],
         )
@@ -315,6 +737,8 @@ def handle_postback(reply_token: str, user_id: str, data: str):
 
 @app.post("/webhook")
 async def webhook(request: Request):
+    global LAST_REQUEST_BASE_URL
+    LAST_REQUEST_BASE_URL = get_request_base_url(request)
     signature = request.headers.get("X-Line-Signature", "")
     body = await request.body()
 
@@ -347,6 +771,11 @@ async def webhook(request: Request):
             reply_message(reply_token, build_home_text())
             continue
 
+        if user_text in {"取消", "取消回報"}:
+            clear_user_mode(user_id)
+            reply_message(reply_token, "已取消問題回報，回到一般查詢模式。")
+            continue
+
         if user_text == "查詢專案":
             clear_user_mode(user_id)
             reply_messages(
@@ -367,7 +796,23 @@ async def webhook(request: Request):
             reply_message(reply_token, "已切換到直接輸入模式，請直接輸入查詢內容。")
             continue
 
-        if USER_MODES.get(user_id) == "report":
+        if user_text in {"今日 Daily Report", "今日Daily Report", "查詢今日daily report", "查詢今日 Daily Report"}:
+            clear_user_mode(user_id)
+            reply_messages(reply_token, [build_daily_report_message()])
+            continue
+
+        had_mode = user_id in USER_MODES
+        mode = get_user_mode(user_id)
+        if had_mode and not mode:
+            reply_message(reply_token, "問題回報模式已超過 5 分鐘自動取消。這次改用一般查詢處理，思考中請稍候…")
+            threading.Thread(
+                target=run_agent_and_push,
+                args=(user_id, user_text),
+                daemon=True,
+            ).start()
+            continue
+
+        if mode == "report":
             clear_user_mode(user_id)
             reply_message(reply_token, "已收到，正在整理並寫入 vault…")
             threading.Thread(
