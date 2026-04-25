@@ -58,10 +58,12 @@ def run():
     old_knowledge_dir = main.KNOWLEDGE_DIR
     old_daily_dir = main.DAILY_DIR
     old_obsidian_vault_name = main.OBSIDIAN_VAULT_NAME
+    old_open_note_token = main.OPEN_NOTE_TOKEN
     main.VAULT_DIR = temp_vault.name
     main.KNOWLEDGE_DIR = os.path.join(temp_vault.name, "04_Knowledge")
     main.DAILY_DIR = os.path.join(temp_vault.name, "03_Daily")
     main.OBSIDIAN_VAULT_NAME = "my-vault-test"
+    main.OPEN_NOTE_TOKEN = "secret-token"
     os.makedirs(os.path.join(main.KNOWLEDGE_DIR, "0102-SampleProjectD"), exist_ok=True)
     os.makedirs(main.DAILY_DIR, exist_ok=True)
     with open(
@@ -188,9 +190,15 @@ def run():
     note_button = summary["contents"]["body"]["contents"][2]
     assert note_button["action"]["type"] == "uri"
     assert note_button["action"]["uri"].startswith("http://testserver/open-note?")
-    note_response = client.get(
+    assert "token=secret-token" in note_button["action"]["uri"]
+    denied_response = client.get(
         "/open-note",
         params={"file": "04_Knowledge/0102-SampleProjectD/20260424-SampleProjectD測試.md"},
+    )
+    assert denied_response.status_code == 403
+    note_response = client.get(
+        "/open-note",
+        params={"file": "04_Knowledge/0102-SampleProjectD/20260424-SampleProjectD測試.md", "token": "secret-token"},
     )
     assert note_response.status_code == 200
     assert "<h1" in note_response.text
@@ -221,9 +229,10 @@ def run():
     assert daily_msg["type"] == "flex"
     daily_button = daily_msg["contents"]["footer"]["contents"][0]
     assert daily_button["action"]["uri"].startswith("http://testserver/open-note?")
+    assert "token=secret-token" in daily_button["action"]["uri"]
     daily_response = client.get(
         "/open-note",
-        params={"file": "03_Daily/20260424-daily-report.md"},
+        params={"file": "03_Daily/20260424-daily-report.md", "token": "secret-token"},
     )
     assert daily_response.status_code == 200
     assert "<table>" in daily_response.text
@@ -234,6 +243,7 @@ def run():
     main.KNOWLEDGE_DIR = old_knowledge_dir
     main.DAILY_DIR = old_daily_dir
     main.OBSIDIAN_VAULT_NAME = old_obsidian_vault_name
+    main.OPEN_NOTE_TOKEN = old_open_note_token
     temp_vault.cleanup()
 
 

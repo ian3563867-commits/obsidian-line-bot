@@ -30,6 +30,7 @@ KNOWLEDGE_DIR = os.path.join(VAULT_DIR, "04_Knowledge")
 DAILY_DIR = os.path.join(VAULT_DIR, "03_Daily")
 OBSIDIAN_VAULT_NAME = os.environ.get("OBSIDIAN_VAULT_NAME", os.path.basename(VAULT_DIR))
 OPEN_NOTE_BASE_URL = os.environ.get("OPEN_NOTE_BASE_URL", "").rstrip("/")
+OPEN_NOTE_TOKEN = os.environ.get("OPEN_NOTE_TOKEN", "").strip()
 KNOWLEDGE_ITEMS_PER_PAGE = 8
 KNOWLEDGE_NOTES_LIMIT = 5
 REPORT_MODE_TIMEOUT_SECONDS = 5 * 60
@@ -128,7 +129,17 @@ def build_note_open_url(path: str) -> str:
     base_url = OPEN_NOTE_BASE_URL or LAST_REQUEST_BASE_URL.rstrip("/")
     if not base_url:
         return "https://example.com/"
-    return base_url + "/open-note?" + urlencode({"file": relative_path}, quote_via=quote)
+    params = {"file": relative_path}
+    if OPEN_NOTE_TOKEN:
+        params["token"] = OPEN_NOTE_TOKEN
+    return base_url + "/open-note?" + urlencode(params, quote_via=quote)
+
+
+def verify_open_note_token(token: str):
+    if not OPEN_NOTE_TOKEN:
+        raise HTTPException(status_code=503, detail="OPEN_NOTE_TOKEN is not configured")
+    if not hmac.compare_digest(token, OPEN_NOTE_TOKEN):
+        raise HTTPException(status_code=403, detail="Invalid open-note token")
 
 
 def get_today_daily_report_path() -> str:
@@ -451,7 +462,8 @@ def build_daily_report_message() -> dict:
 
 
 @app.get("/open-note")
-def open_note(file: str):
+def open_note(file: str, token: str = ""):
+    verify_open_note_token(token)
     normalized = file.replace("\\", "/").lstrip("/")
     target_path = os.path.abspath(os.path.join(VAULT_DIR, normalized))
     vault_root = os.path.abspath(VAULT_DIR)
