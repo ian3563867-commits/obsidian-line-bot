@@ -65,6 +65,8 @@ def run():
     main.OBSIDIAN_VAULT_NAME = "my-vault-test"
     main.OPEN_NOTE_TOKEN = "secret-token"
     os.makedirs(os.path.join(main.KNOWLEDGE_DIR, "0102-SampleProjectD"), exist_ok=True)
+    for idx in range(1, 18):
+        os.makedirs(os.path.join(main.KNOWLEDGE_DIR, f"9002-測試{idx:02d}"), exist_ok=True)
     os.makedirs(main.DAILY_DIR, exist_ok=True)
     with open(
         os.path.join(main.KNOWLEDGE_DIR, "0102-SampleProjectD", "20260424-SampleProjectD測試.md"),
@@ -92,6 +94,16 @@ def run():
     )
     assert CALLS[-1]["json"]["messages"][1]["type"] == "flex"
     assert CALLS[-1]["json"]["messages"][1]["altText"] == "Knowledge 清單"
+    knowledge_contents = CALLS[-1]["json"]["messages"][1]["contents"]
+    assert knowledge_contents["type"] == "carousel"
+    assert len(knowledge_contents["contents"]) == 4
+    for bubble in knowledge_contents["contents"]:
+        project_boxes = [
+            item
+            for item in bubble["body"]["contents"]
+            if item.get("type") == "box"
+        ]
+        assert len(project_boxes) <= main.KNOWLEDGE_ITEMS_PER_PAGE
 
     send_event(
         client,

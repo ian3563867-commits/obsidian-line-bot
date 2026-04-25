@@ -31,7 +31,7 @@ DAILY_DIR = os.path.join(VAULT_DIR, "03_Daily")
 OBSIDIAN_VAULT_NAME = os.environ.get("OBSIDIAN_VAULT_NAME", os.path.basename(VAULT_DIR))
 OPEN_NOTE_BASE_URL = os.environ.get("OPEN_NOTE_BASE_URL", "").rstrip("/")
 OPEN_NOTE_TOKEN = os.environ.get("OPEN_NOTE_TOKEN", "").strip()
-KNOWLEDGE_ITEMS_PER_PAGE = 8
+KNOWLEDGE_ITEMS_PER_PAGE = 5
 KNOWLEDGE_NOTES_LIMIT = 5
 REPORT_MODE_TIMEOUT_SECONDS = 5 * 60
 USER_MODES: dict[str, dict] = {}
@@ -228,9 +228,54 @@ def get_user_mode(user_id: str) -> str:
 def build_project_list_flex(page: int = 0) -> dict:
     projects = get_project_names()
     total = len(projects)
-    start = page * KNOWLEDGE_ITEMS_PER_PAGE
-    end = start + KNOWLEDGE_ITEMS_PER_PAGE
-    page_items = projects[start:end]
+    total_pages = max((total - 1) // KNOWLEDGE_ITEMS_PER_PAGE + 1, 1)
+
+    if not projects:
+        return {
+            "type": "flex",
+            "altText": "Knowledge 清單",
+            "contents": {
+                "type": "bubble",
+                "body": {
+                    "type": "box",
+                    "layout": "vertical",
+                    "contents": [
+                        {
+                            "type": "text",
+                            "text": "Knowledge 摘要",
+                            "weight": "bold",
+                            "size": "xl",
+                        },
+                        {
+                            "type": "text",
+                            "text": "目前找不到 Knowledge 資料夾。",
+                            "size": "md",
+                            "margin": "lg",
+                            "wrap": True,
+                        },
+                    ],
+                },
+            },
+        }
+
+    bubbles = []
+    for page_index in range(total_pages):
+        start = page_index * KNOWLEDGE_ITEMS_PER_PAGE
+        end = start + KNOWLEDGE_ITEMS_PER_PAGE
+        page_items = projects[start:end]
+        bubbles.append(build_project_page_bubble(page_items, page_index, total_pages))
+
+    return {
+        "type": "flex",
+        "altText": "Knowledge 清單",
+        "contents": {
+            "type": "carousel",
+            "contents": bubbles,
+        },
+    }
+
+
+def build_project_page_bubble(page_items: list[str], page: int, total_pages: int) -> dict:
     contents: list[dict] = [
         {
             "type": "text",
@@ -240,101 +285,50 @@ def build_project_list_flex(page: int = 0) -> dict:
         },
         {
             "type": "text",
-            "text": f"第 {page + 1} 頁，共 {max((total - 1) // KNOWLEDGE_ITEMS_PER_PAGE + 1, 1)} 頁",
+            "text": f"第 {page + 1} 頁，共 {total_pages} 頁",
             "size": "sm",
             "color": "#666666",
             "margin": "md",
         },
     ]
 
-    if not page_items:
+    for name in page_items:
         contents.append(
             {
-                "type": "text",
-                "text": "目前找不到 Knowledge 資料夾。",
-                "size": "md",
+                "type": "box",
+                "layout": "vertical",
                 "margin": "lg",
-                "wrap": True,
-            }
-        )
-    else:
-        for name in page_items:
-            contents.append(
-                {
-                    "type": "box",
-                    "layout": "vertical",
-                    "margin": "lg",
-                    "spacing": "sm",
-                    "contents": [
-                        {
-                            "type": "text",
-                            "text": name,
-                            "weight": "bold",
-                            "wrap": True,
+                "spacing": "sm",
+                "contents": [
+                    {
+                        "type": "text",
+                        "text": name,
+                        "weight": "bold",
+                        "wrap": True,
+                    },
+                    {
+                        "type": "button",
+                        "style": "primary",
+                        "height": "sm",
+                        "action": {
+                            "type": "postback",
+                            "label": "查看摘要",
+                            "data": "action=project_summary&"
+                            + urlencode({"project": name}, quote_via=quote),
+                            "displayText": f"查看知識：{name}",
                         },
-                        {
-                            "type": "button",
-                            "style": "primary",
-                            "height": "sm",
-                            "action": {
-                                "type": "postback",
-                                "label": "查看摘要",
-                                "data": "action=project_summary&"
-                                + urlencode({"project": name}, quote_via=quote),
-                                "displayText": f"查看知識：{name}",
-                            },
-                        },
-                    ],
-                }
-            )
-
-    footer_contents: list[dict] = []
-    if start > 0:
-        footer_contents.append(
-            {
-                "type": "button",
-                "style": "secondary",
-                "action": {
-                    "type": "postback",
-                    "label": "上一頁",
-                    "data": f"action=query_projects&page={page - 1}",
-                    "displayText": "查看上一頁 Knowledge",
-                },
-            }
-        )
-    if end < total:
-        footer_contents.append(
-            {
-                "type": "button",
-                "style": "primary",
-                "action": {
-                    "type": "postback",
-                    "label": "下一頁",
-                    "data": f"action=query_projects&page={page + 1}",
-                    "displayText": "查看下一頁 Knowledge",
-                },
+                    },
+                ],
             }
         )
 
-    bubble = {
+    return {
         "type": "bubble",
         "body": {
             "type": "box",
             "layout": "vertical",
             "contents": contents,
         },
-    }
-    if footer_contents:
-        bubble["footer"] = {
-            "type": "box",
-            "layout": "vertical",
-            "spacing": "sm",
-            "contents": footer_contents,
-        }
-    return {
-        "type": "flex",
-        "altText": "Knowledge 清單",
-        "contents": bubble,
     }
 
 
