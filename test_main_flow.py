@@ -59,11 +59,13 @@ def run():
     old_daily_dir = main.DAILY_DIR
     old_obsidian_vault_name = main.OBSIDIAN_VAULT_NAME
     old_open_note_token = main.OPEN_NOTE_TOKEN
+    old_open_note_ttl_seconds = main.OPEN_NOTE_TTL_SECONDS
     main.VAULT_DIR = temp_vault.name
     main.KNOWLEDGE_DIR = os.path.join(temp_vault.name, "04_Knowledge")
     main.DAILY_DIR = os.path.join(temp_vault.name, "03_Daily")
     main.OBSIDIAN_VAULT_NAME = "my-vault-test"
     main.OPEN_NOTE_TOKEN = "secret-token"
+    main.OPEN_NOTE_TTL_SECONDS = 1800
     os.makedirs(os.path.join(main.KNOWLEDGE_DIR, "0102-SampleProjectD"), exist_ok=True)
     for idx in range(1, 18):
         os.makedirs(os.path.join(main.KNOWLEDGE_DIR, f"9002-測試{idx:02d}"), exist_ok=True)
@@ -210,20 +212,37 @@ def run():
     note_button = summary["contents"]["body"]["contents"][2]
     assert note_button["action"]["type"] == "uri"
     assert note_button["action"]["uri"].startswith("http://testserver/open-note?")
-    assert "token=secret-token" in note_button["action"]["uri"]
+    assert "exp=" in note_button["action"]["uri"]
+    assert "sig=" in note_button["action"]["uri"]
+    assert "token=secret-token" not in note_button["action"]["uri"]
     denied_response = client.get(
         "/open-note",
         params={"file": "04_Knowledge/0102-SampleProjectD/20260424-SampleProjectD測試.md"},
     )
     assert denied_response.status_code == 403
+    signed_file = "04_Knowledge/0102-SampleProjectD/20260424-SampleProjectD測試.md"
+    signed_exp = int(time.time()) + 60
+    signed_sig = main.sign_open_note(signed_file, signed_exp)
     note_response = client.get(
         "/open-note",
-        params={"file": "04_Knowledge/0102-SampleProjectD/20260424-SampleProjectD測試.md", "token": "secret-token"},
+        params={"file": signed_file, "exp": signed_exp, "sig": signed_sig},
     )
     assert note_response.status_code == 200
     assert "<h1" in note_response.text
     assert "<li>項目一</li>" in note_response.text
     assert "title: SampleProjectD測試" not in note_response.text
+    tampered_response = client.get(
+        "/open-note",
+        params={"file": "03_Daily/20260424-daily-report.md", "exp": signed_exp, "sig": signed_sig},
+    )
+    assert tampered_response.status_code == 403
+    expired_file = "04_Knowledge/0102-SampleProjectD/20260424-SampleProjectD測試.md"
+    expired_exp = int(time.time()) - 1
+    expired_response = client.get(
+        "/open-note",
+        params={"file": expired_file, "exp": expired_exp, "sig": main.sign_open_note(expired_file, expired_exp)},
+    )
+    assert expired_response.status_code == 403
 
     send_event(
         client,
@@ -249,10 +268,12 @@ def run():
     assert daily_msg["type"] == "flex"
     daily_button = daily_msg["contents"]["footer"]["contents"][0]
     assert daily_button["action"]["uri"].startswith("http://testserver/open-note?")
-    assert "token=secret-token" in daily_button["action"]["uri"]
+    assert "sig=" in daily_button["action"]["uri"]
+    daily_file = "03_Daily/20260424-daily-report.md"
+    daily_exp = int(time.time()) + 60
     daily_response = client.get(
         "/open-note",
-        params={"file": "03_Daily/20260424-daily-report.md", "token": "secret-token"},
+        params={"file": daily_file, "exp": daily_exp, "sig": main.sign_open_note(daily_file, daily_exp)},
     )
     assert daily_response.status_code == 200
     assert "<table>" in daily_response.text
@@ -277,6 +298,7 @@ def run():
     main.DAILY_DIR = old_daily_dir
     main.OBSIDIAN_VAULT_NAME = old_obsidian_vault_name
     main.OPEN_NOTE_TOKEN = old_open_note_token
+    main.OPEN_NOTE_TTL_SECONDS = old_open_note_ttl_seconds
     temp_vault.cleanup()
 
 

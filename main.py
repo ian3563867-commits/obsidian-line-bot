@@ -31,6 +31,7 @@ DAILY_DIR = os.path.join(VAULT_DIR, "03_Daily")
 OBSIDIAN_VAULT_NAME = os.environ.get("OBSIDIAN_VAULT_NAME", os.path.basename(VAULT_DIR))
 OPEN_NOTE_BASE_URL = os.environ.get("OPEN_NOTE_BASE_URL", "").rstrip("/")
 OPEN_NOTE_TOKEN = os.environ.get("OPEN_NOTE_TOKEN", "").strip()
+OPEN_NOTE_TTL_SECONDS = int(os.environ.get("OPEN_NOTE_TTL_SECONDS", "1800"))
 KNOWLEDGE_ITEMS_PER_PAGE = 5
 KNOWLEDGE_NOTES_LIMIT = 5
 FAST_PREVIEW_LIMIT = 3
@@ -225,17 +226,32 @@ def build_note_open_url(path: str) -> str:
     base_url = OPEN_NOTE_BASE_URL or LAST_REQUEST_BASE_URL.rstrip("/")
     if not base_url:
         return "https://example.com/"
-    params = {"file": relative_path}
-    if OPEN_NOTE_TOKEN:
-        params["token"] = OPEN_NOTE_TOKEN
+    if not OPEN_NOTE_TOKEN:
+        return base_url + "/open-note?" + urlencode({"file": relative_path}, quote_via=quote)
+    exp = int(time.time()) + OPEN_NOTE_TTL_SECONDS
+    params = {
+        "file": relative_path,
+        "exp": str(exp),
+        "sig": sign_open_note(relative_path, exp),
+    }
     return base_url + "/open-note?" + urlencode(params, quote_via=quote)
 
 
-def verify_open_note_token(token: str):
+def sign_open_note(file_path: str, exp: int) -> str:
     if not OPEN_NOTE_TOKEN:
         raise HTTPException(status_code=503, detail="OPEN_NOTE_TOKEN is not configured")
-    if not hmac.compare_digest(token, OPEN_NOTE_TOKEN):
-        raise HTTPException(status_code=403, detail="Invalid open-note token")
+    message = f"{file_path}\n{exp}".encode("utf-8")
+    return hmac.new(OPEN_NOTE_TOKEN.encode("utf-8"), message, hashlib.sha256).hexdigest()
+
+
+def verify_open_note_signature(file_path: str, exp: int, sig: str):
+    if not OPEN_NOTE_TOKEN:
+        raise HTTPException(status_code=503, detail="OPEN_NOTE_TOKEN is not configured")
+    if exp < int(time.time()):
+        raise HTTPException(status_code=403, detail="Open-note link expired")
+    expected = sign_open_note(file_path, exp)
+    if not hmac.compare_digest(sig, expected):
+        raise HTTPException(status_code=403, detail="Invalid open-note signature")
 
 
 def get_today_daily_report_path() -> str:
@@ -552,8 +568,8 @@ def build_daily_report_message() -> dict:
 
 
 @app.get("/open-note")
-def open_note(file: str, token: str = ""):
-    verify_open_note_token(token)
+def open_note(file: str, exp: int = 0, sig: str = ""):
+    verify_open_note_signature(file, exp, sig)
     normalized = file.replace("\\", "/").lstrip("/")
     target_path = os.path.abspath(os.path.join(VAULT_DIR, normalized))
     vault_root = os.path.abspath(VAULT_DIR)
