@@ -33,6 +33,7 @@ OPEN_NOTE_BASE_URL = os.environ.get("OPEN_NOTE_BASE_URL", "").rstrip("/")
 OPEN_NOTE_TOKEN = os.environ.get("OPEN_NOTE_TOKEN", "").strip()
 KNOWLEDGE_ITEMS_PER_PAGE = 5
 KNOWLEDGE_NOTES_LIMIT = 5
+FAST_PREVIEW_LIMIT = 3
 REPORT_MODE_TIMEOUT_SECONDS = 5 * 60
 USER_MODES: dict[str, dict] = {}
 LAST_REQUEST_BASE_URL = ""
@@ -84,6 +85,101 @@ def ask_agent(prompt: str) -> str:
     if AGENT_BACKEND == "codex":
         return ask_codex(prompt)
     return f"未知 AGENT_BACKEND={AGENT_BACKEND}，請設定為 claude 或 codex。"
+
+
+def build_fast_preview(user_text: str) -> str:
+    matches = find_knowledge_index_matches(user_text, FAST_PREVIEW_LIMIT)
+    if not matches:
+        return "已收到，正在查詢 vault 並整理答案…"
+
+    lines = ["已找到可能相關資料，正在整理正式答案："]
+    for entry in matches:
+        lines.append(f"• {entry['title']}")
+    return "\n".join(lines)
+
+
+def find_knowledge_index_matches(user_text: str, limit: int) -> list[dict[str, str]]:
+    terms = build_search_terms(user_text)
+    if not terms:
+        return []
+
+    entries = read_knowledge_index_entries()
+    scored: list[tuple[int, dict[str, str]]] = []
+    life_query = is_life_query(user_text)
+    for entry in entries:
+        if not life_query and "life" in entry["tags"].lower():
+            continue
+        haystack = " ".join([entry["page"], entry["title"], entry["summary"], entry["tags"]]).lower()
+        score = sum(term_score(term, haystack) for term in terms)
+        if score > 0:
+            scored.append((score, entry))
+
+    scored.sort(key=lambda item: (-item[0], item[1]["title"]))
+    return [entry for _, entry in scored[:limit]]
+
+
+def build_search_terms(user_text: str) -> list[str]:
+    lower = user_text.lower()
+    terms = re.findall(r"[a-z0-9][a-z0-9_-]*", lower)
+    cjk_chunks = re.findall(r"[\u4e00-\u9fff]{2,}", user_text)
+    for chunk in cjk_chunks:
+        terms.append(chunk)
+        if len(chunk) > 2:
+            terms.extend(chunk[i : i + 2] for i in range(len(chunk) - 1))
+
+    seen = set()
+    result = []
+    for term in terms:
+        if len(term) < 2 or term in seen:
+            continue
+        seen.add(term)
+        result.append(term)
+    return result
+
+
+def term_score(term: str, haystack: str) -> int:
+    if term not in haystack:
+        return 0
+    if len(term) >= 4:
+        return 4
+    return 2
+
+
+def is_life_query(user_text: str) -> bool:
+    lower = user_text.lower()
+    return any(keyword in lower for keyword in ("生活", "life", "個人", "personal"))
+
+
+def read_knowledge_index_entries() -> list[dict[str, str]]:
+    index_path = os.path.join(KNOWLEDGE_DIR, "index.md")
+    if not os.path.isfile(index_path):
+        return []
+
+    entries = []
+    with open(index_path, "r", encoding="utf-8") as f:
+        for line in f:
+            match = re.match(r"\|\s*\[\[([^\]]+)\]\]\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\|", line)
+            if not match:
+                continue
+            page, summary, tags = [part.strip() for part in match.groups()]
+            if page.startswith("-"):
+                continue
+            title = os.path.basename(page.replace("\\", "/"))
+            entries.append(
+                {
+                    "page": page,
+                    "title": title,
+                    "summary": strip_markdown_inline(summary),
+                    "tags": strip_markdown_inline(tags),
+                }
+            )
+    return entries
+
+
+def strip_markdown_inline(text: str) -> str:
+    text = re.sub(r"`([^`]+)`", r"\1", text)
+    text = re.sub(r"\*\*([^*]+)\*\*", r"\1", text)
+    return text
 
 
 def get_project_names() -> list[str]:
@@ -828,7 +924,7 @@ async def webhook(request: Request):
             ).start()
             continue
 
-        reply_message(reply_token, "思考中，請稍候…")
+        reply_message(reply_token, build_fast_preview(user_text))
         threading.Thread(
             target=run_agent_and_push,
             args=(user_id, user_text),

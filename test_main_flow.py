@@ -68,6 +68,14 @@ def run():
     for idx in range(1, 18):
         os.makedirs(os.path.join(main.KNOWLEDGE_DIR, f"9002-測試{idx:02d}"), exist_ok=True)
     os.makedirs(main.DAILY_DIR, exist_ok=True)
+    with open(os.path.join(main.KNOWLEDGE_DIR, "index.md"), "w", encoding="utf-8") as f:
+        f.write(
+            "| 頁面 | 摘要 | 標籤 |\n"
+            "| --- | --- | --- |\n"
+            "| [[0211-SampleProjectD-ASRS/20260409-問題紀錄]] | SampleProjectD ASRS 目前問題彙整 | ASRS, WMS, SampleProjectD |\n"
+            "| [[0188-SampleProjectA/20260409-DN單刪除機制]] | SampleProjectA DN單刪除 | WMS, SampleProjectA |\n"
+            "| [[生活/20260418-白沙屯媽祖遶境跟香]] | 生活紀錄 | life |\n"
+        )
     with open(
         os.path.join(main.KNOWLEDGE_DIR, "0102-SampleProjectD", "20260424-SampleProjectD測試.md"),
         "w",
@@ -248,6 +256,19 @@ def run():
     )
     assert daily_response.status_code == 200
     assert "<table>" in daily_response.text
+
+    send_event(
+        client,
+        {
+            "type": "message",
+            "replyToken": "r7",
+            "source": {"userId": "test-user"},
+            "message": {"type": "text", "text": "SampleProjectD ASRS 目前問題"},
+        },
+    )
+    assert "已找到可能相關資料" in CALLS[-2]["json"]["messages"][0]["text"]
+    assert "20260409-問題紀錄" in CALLS[-2]["json"]["messages"][0]["text"]
+    assert CALLS[-1]["json"]["messages"][0]["text"].startswith("AGENT:")
 
     print("OK")
 
