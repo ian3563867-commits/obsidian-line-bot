@@ -5,6 +5,8 @@ import json
 import os
 import tempfile
 import time
+from datetime import datetime
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -104,6 +106,8 @@ def run():
     old_open_note_token = main.OPEN_NOTE_TOKEN
     old_open_note_ttl_seconds = main.OPEN_NOTE_TTL_SECONDS
     old_answer_pages_dir = main.ANSWER_PAGES_DIR
+    old_app_assets_dir = main.APP_ASSETS_DIR
+    old_mind_palace_icon_path = main.MIND_PALACE_ICON_PATH
     main.VAULT_DIR = temp_vault.name
     main.KNOWLEDGE_DIR = os.path.join(temp_vault.name, "04_Knowledge")
     main.DAILY_DIR = os.path.join(temp_vault.name, "03_Daily")
@@ -111,6 +115,11 @@ def run():
     main.OBSIDIAN_VAULT_NAME = "my-vault-test"
     main.OPEN_NOTE_TOKEN = "secret-token"
     main.OPEN_NOTE_TTL_SECONDS = 1800
+    main.APP_ASSETS_DIR = os.path.join(temp_vault.name, "assets")
+    main.MIND_PALACE_ICON_PATH = os.path.join(main.APP_ASSETS_DIR, "mind-palace-icon.png")
+    os.makedirs(main.APP_ASSETS_DIR, exist_ok=True)
+    with open(main.MIND_PALACE_ICON_PATH, "wb") as f:
+        f.write(b"custom-icon")
     os.makedirs(os.path.join(main.KNOWLEDGE_DIR, "0102-SampleProjectD"), exist_ok=True)
     for idx in range(1, 18):
         os.makedirs(os.path.join(main.KNOWLEDGE_DIR, f"9002-測試{idx:02d}"), exist_ok=True)
@@ -190,10 +199,12 @@ def run():
     assert knowledge_contents["type"] == "carousel"
     assert len(knowledge_contents["contents"]) == 4
     for bubble in knowledge_contents["contents"]:
+        assert bubble["body"]["contents"][0]["contents"][0]["text"] == "Knowledge 摘要"
+        assert "/mind-palace-icon.png?v=" in bubble["body"]["contents"][0]["contents"][1]["url"]
         project_boxes = [
             item
             for item in bubble["body"]["contents"]
-            if item.get("type") == "box"
+            if item.get("type") == "box" and item.get("layout") == "vertical"
         ]
         assert len(project_boxes) <= main.KNOWLEDGE_ITEMS_PER_PAGE
 
@@ -207,8 +218,16 @@ def run():
         },
     )
     assert main.USER_MODES.get("test-user", {}).get("mode") == "report"
-    assert CALLS[-1]["json"]["messages"][0]["type"] == "flex"
-    assert CALLS[-1]["json"]["messages"][0]["altText"] == "問題回報模式"
+    report_mode_msg = CALLS[-1]["json"]["messages"][0]
+    assert report_mode_msg["type"] == "flex"
+    assert report_mode_msg["altText"] == "Vault 回報"
+    report_mode_body = report_mode_msg["contents"]["body"]["contents"]
+    assert report_mode_body[0]["contents"][0]["text"] == "Vault 回報"
+    assert "/mind-palace-icon.png?v=" in report_mode_body[0]["contents"][1]["url"]
+    assert report_mode_body[1]["text"] == "回報模式已開啟"
+    assert report_mode_body[2]["text"] == "下一則訊息會記錄到 vault"
+    assert report_mode_body[4]["contents"][0]["text"] == "有效時間"
+    assert report_mode_body[4]["contents"][1]["text"] == "5 分鐘"
 
     send_event(
         client,
@@ -253,7 +272,7 @@ def run():
             "message": {"type": "text", "text": "SampleProjectD現場入庫異常"},
         },
     )
-    assert CALLS[-1]["json"]["messages"][0]["altText"] == "問題回報"
+    assert CALLS[-1]["json"]["messages"][0]["altText"] == "Vault 回報"
     assert wait_for_file_contains(main.ANSWER_PAGES_DIR, "已記錄到 vault")
     assert wait_for_file_contains(main.ANSWER_PAGES_DIR, "00_Inbox\\20260424-SampleProjectD問題回報.md")
     assert [item["action"]["label"] for item in CALLS[-1]["json"]["messages"][0]["quickReply"]["items"]] == [
@@ -353,10 +372,17 @@ def run():
     )
     daily_msg = CALLS[-1]["json"]["messages"][0]
     assert daily_msg["type"] == "flex"
+    daily_body = daily_msg["contents"]["body"]["contents"]
+    assert daily_body[0]["contents"][0]["text"] == "Daily Report"
+    assert "/mind-palace-icon.png?v=" in daily_body[0]["contents"][1]["url"]
+    assert daily_body[1]["text"] == "顯示最近一份報告"
+    assert daily_body[2]["text"] == "20260425-daily-report"
+    assert daily_body[4]["contents"][0]["text"] == "原因"
+    assert daily_body[4]["contents"][1]["text"] == "今日尚未產生"
     daily_button = daily_msg["contents"]["footer"]["contents"][0]
+    assert daily_button["action"]["label"] == "開啟"
     assert daily_button["action"]["uri"].startswith("http://testserver/open-note?")
     assert "sig=" in daily_button["action"]["uri"]
-    assert "20260425-daily-report" in daily_msg["contents"]["body"]["contents"][2]["text"]
     daily_file = "03_Daily/20260425-daily-report.md"
     daily_exp = int(time.time()) + 60
     daily_response = client.get(
@@ -365,6 +391,25 @@ def run():
     )
     assert daily_response.status_code == 200
     assert "<table>" in daily_response.text
+
+    today_report = os.path.join(main.DAILY_DIR, datetime.now().strftime("%Y%m%d-daily-report.md"))
+    with open(today_report, "w", encoding="utf-8") as f:
+        f.write("# Daily Report Today\n\n| item | status |\n|---|---|\n| today | OK |\n")
+    send_event(
+        client,
+        {
+            "type": "message",
+            "replyToken": "r6-today",
+            "source": {"userId": "test-user"},
+            "message": {"type": "text", "text": "今日 Daily Report"},
+        },
+    )
+    today_daily_msg = CALLS[-1]["json"]["messages"][0]
+    today_daily_body = today_daily_msg["contents"]["body"]["contents"]
+    assert today_daily_body[1]["text"] == "今日報告已就緒"
+    assert today_daily_body[2]["text"] == os.path.splitext(os.path.basename(today_report))[0]
+    assert today_daily_body[4]["contents"][0]["text"] == "來源"
+    assert today_daily_body[4]["contents"][1]["text"] == "今日 Daily Report"
 
     send_event(
         client,
@@ -375,7 +420,20 @@ def run():
             "message": {"type": "text", "text": "SampleProjectD ASRS 目前問題"},
         },
     )
-    assert CALLS[-1]["json"]["messages"][0]["altText"] == "查詢結果"
+    answer_msg = CALLS[-1]["json"]["messages"][0]
+    assert answer_msg["altText"] == "Vault 查詢"
+    answer_body = answer_msg["contents"]["body"]["contents"]
+    assert answer_body[0]["contents"][0]["text"] == "Vault 查詢"
+    assert "/mind-palace-icon.png?v=" in answer_body[0]["contents"][1]["url"]
+    assert answer_body[1]["text"] == "結果頁已建立"
+    assert answer_body[2]["text"].endswith(" 建立")
+    assert answer_body[4]["contents"][0]["text"] == "查詢內容"
+    assert answer_body[4]["contents"][1]["text"] == "SampleProjectD ASRS 目前問題"
+    assert answer_msg["contents"]["footer"]["contents"][0]["action"]["label"] == "開啟"
+    with patch("main.build_mind_palace_icon_png", side_effect=AssertionError("should read local icon")):
+        icon_response = client.get("/mind-palace-icon.png")
+    assert icon_response.status_code == 200
+    assert icon_response.content == b"custom-icon"
     assert wait_for_file_contains(main.ANSWER_PAGES_DIR, "SampleProjectD ASRS 目前問題")
     assert wait_for_file_contains(main.ANSWER_PAGES_DIR, "AGENT:")
 
@@ -388,6 +446,8 @@ def run():
     main.OPEN_NOTE_TOKEN = old_open_note_token
     main.OPEN_NOTE_TTL_SECONDS = old_open_note_ttl_seconds
     main.ANSWER_PAGES_DIR = old_answer_pages_dir
+    main.APP_ASSETS_DIR = old_app_assets_dir
+    main.MIND_PALACE_ICON_PATH = old_mind_palace_icon_path
     temp_vault.cleanup()
 
 

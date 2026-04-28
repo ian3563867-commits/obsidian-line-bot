@@ -14,7 +14,7 @@ import markdown
 import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 
 from ask_claude import ask_claude
 from ask_codex import ask_codex
@@ -44,6 +44,8 @@ REPORT_MODE_TIMEOUT_SECONDS = 5 * 60
 USER_MODES: dict[str, dict] = {}
 LAST_REQUEST_BASE_URL = ""
 LOG_FILE = os.environ.get("BOT_LOG_FILE", os.path.join(os.path.dirname(__file__), "bot-debug.log"))
+APP_ASSETS_DIR = os.environ.get("APP_ASSETS_DIR", os.path.join(os.path.dirname(__file__), "assets"))
+MIND_PALACE_ICON_PATH = os.path.join(APP_ASSETS_DIR, "mind-palace-icon.png")
 
 app = FastAPI()
 
@@ -302,9 +304,9 @@ project: 通用
 
 
 def build_answer_page_message(path: str, prompt: str, kind: str) -> dict:
-    title = "查詢結果" if kind == "query" else "問題回報"
-    status = "處理中，稍後刷新頁面"
-    prompt_label = "問題" if kind == "query" else "內容"
+    title = "Vault 查詢" if kind == "query" else "Vault 回報"
+    created_at = datetime.now().strftime("%Y.%m.%d %H:%M 建立")
+    prompt_label = "查詢內容" if kind == "query" else "回報內容"
     return {
         "type": "flex",
         "altText": title,
@@ -314,31 +316,51 @@ def build_answer_page_message(path: str, prompt: str, kind: str) -> dict:
             "body": {
                 "type": "box",
                 "layout": "vertical",
-                "spacing": "none",
-                "paddingAll": "16px",
+                "spacing": "md",
+                "paddingAll": "20px",
                 "contents": [
+                    build_card_header(title),
                     {
                         "type": "text",
-                        "text": title,
-                        "size": "sm",
+                        "text": "結果頁已建立",
+                        "size": "xl",
+                        "weight": "bold",
                         "color": "#111827",
                         "wrap": True,
                     },
                     {
                         "type": "text",
-                        "text": status,
-                        "size": "sm",
-                        "color": "#111827",
+                        "text": created_at,
+                        "size": "xs",
+                        "color": "#6B7280",
                         "wrap": True,
-                        "margin": "sm",
                     },
                     {
-                        "type": "text",
-                        "text": f"{prompt_label}：{shorten_label(prompt, 72)}",
-                        "size": "sm",
-                        "color": "#111827",
-                        "wrap": True,
-                        "margin": "sm",
+                        "type": "separator",
+                        "margin": "lg",
+                    },
+                    {
+                        "type": "box",
+                        "layout": "horizontal",
+                        "margin": "md",
+                        "contents": [
+                            {
+                                "type": "text",
+                                "text": prompt_label,
+                                "size": "sm",
+                                "color": "#6B7280",
+                                "flex": 1,
+                            },
+                            {
+                                "type": "text",
+                                "text": shorten_label(prompt, 72),
+                                "size": "sm",
+                                "color": "#111827",
+                                "align": "end",
+                                "wrap": True,
+                                "flex": 2,
+                            },
+                        ],
                     },
                 ],
             },
@@ -346,14 +368,15 @@ def build_answer_page_message(path: str, prompt: str, kind: str) -> dict:
                 "type": "box",
                 "layout": "vertical",
                 "paddingTop": "0px",
-                "paddingStart": "16px",
-                "paddingEnd": "16px",
-                "paddingBottom": "12px",
+                "paddingStart": "20px",
+                "paddingEnd": "20px",
+                "paddingBottom": "20px",
                 "contents": [
                     {
                         "type": "button",
                         "style": "primary",
                         "height": "sm",
+                        "color": "#06C755",
                         "action": {
                             "type": "uri",
                             "label": "開啟",
@@ -365,6 +388,85 @@ def build_answer_page_message(path: str, prompt: str, kind: str) -> dict:
         },
         "quickReply": build_home_quick_reply(),
     }
+
+
+def build_card_header(label: str) -> dict:
+    return {
+        "type": "box",
+        "layout": "horizontal",
+        "contents": [
+            {
+                "type": "text",
+                "text": label,
+                "size": "sm",
+                "weight": "bold",
+                "color": "#06C755",
+                "flex": 1,
+            },
+            {
+                "type": "image",
+                "url": build_app_asset_url("mind-palace-icon.png"),
+                "size": "32px",
+                "aspectMode": "fit",
+                "flex": 0,
+            },
+        ],
+    }
+
+
+def build_app_asset_url(filename: str) -> str:
+    base_url = OPEN_NOTE_BASE_URL or LAST_REQUEST_BASE_URL
+    if not base_url:
+        base_url = "http://localhost:8000"
+    url = base_url.rstrip("/") + "/" + filename.lstrip("/")
+    asset_path = os.path.join(APP_ASSETS_DIR, filename.lstrip("/"))
+    if os.path.isfile(asset_path):
+        return url + "?" + urlencode({"v": str(int(os.path.getmtime(asset_path)))})
+    return url
+
+
+def build_mind_palace_icon_png() -> bytes:
+    import struct
+    import zlib
+
+    size = 64
+    rows = []
+    for y in range(size):
+        row = bytearray([0])
+        for x in range(size):
+            dx = x - 31.5
+            dy = y - 31.5
+            distance = (dx * dx + dy * dy) ** 0.5
+            if distance > 30:
+                row.extend((0, 0, 0, 0))
+                continue
+            glow = max(0, 1 - distance / 30)
+            r = int(42 + 92 * glow + 28 * (x / size))
+            g = int(55 + 88 * glow + 54 * (1 - y / size))
+            b = int(150 + 92 * glow)
+            alpha = 255
+            if 18 < distance < 24 and x > y - 6:
+                r, g, b = 40, 221, 184
+            if distance < 9:
+                r, g, b = 245, 250, 255
+            row.extend((r, g, b, alpha))
+        rows.append(bytes(row))
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        checksum = zlib.crc32(kind + data) & 0xFFFFFFFF
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", checksum)
+
+    raw = b"".join(rows)
+    header = struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b"")
+
+
+@app.get("/mind-palace-icon.png")
+def mind_palace_icon():
+    if os.path.isfile(MIND_PALACE_ICON_PATH):
+        with open(MIND_PALACE_ICON_PATH, "rb") as f:
+            return Response(content=f.read(), media_type="image/png")
+    return Response(content=build_mind_palace_icon_png(), media_type="image/png")
 
 
 def sign_open_note(file_path: str, exp: int) -> str:
@@ -578,13 +680,10 @@ def build_project_list_flex(page: int = 0) -> dict:
                 "body": {
                     "type": "box",
                     "layout": "vertical",
+                    "spacing": "md",
+                    "paddingAll": "20px",
                     "contents": [
-                        {
-                            "type": "text",
-                            "text": "Knowledge 摘要",
-                            "weight": "bold",
-                            "size": "xl",
-                        },
+                        build_card_header("Knowledge 摘要"),
                         {
                             "type": "text",
                             "text": "目前找不到 Knowledge 資料夾。",
@@ -618,12 +717,7 @@ def build_project_list_flex(page: int = 0) -> dict:
 
 def build_project_page_bubble(page_items: list[str], page: int, total_pages: int) -> dict:
     contents: list[dict] = [
-        {
-            "type": "text",
-            "text": "Knowledge 摘要",
-            "weight": "bold",
-            "size": "xl",
-        },
+        build_card_header("Knowledge 摘要"),
         {
             "type": "text",
             "text": f"第 {page + 1} 頁，共 {total_pages} 頁",
@@ -668,6 +762,8 @@ def build_project_page_bubble(page_items: list[str], page: int, total_pages: int
         "body": {
             "type": "box",
             "layout": "vertical",
+            "spacing": "md",
+            "paddingAll": "20px",
             "contents": contents,
         },
     }
@@ -753,7 +849,9 @@ def build_daily_report_message() -> dict:
 
     target_path = today_path or latest_path
     title = os.path.splitext(os.path.basename(target_path))[0]
-    status_text = "今日 Daily Report" if today_path else "今天尚未產生 Daily Report，先顯示最近一份。"
+    status_text = "今日報告已就緒" if today_path else "顯示最近一份報告"
+    detail_label = "來源" if today_path else "原因"
+    detail_text = "今日 Daily Report" if today_path else "今日尚未產生"
     return {
         "type": "flex",
         "altText": "Daily Report",
@@ -763,39 +861,69 @@ def build_daily_report_message() -> dict:
                 "type": "box",
                 "layout": "vertical",
                 "spacing": "md",
+                "paddingAll": "20px",
                 "contents": [
-                    {
-                        "type": "text",
-                        "text": "Daily Report",
-                        "weight": "bold",
-                        "size": "xl",
-                    },
+                    build_card_header("Daily Report"),
                     {
                         "type": "text",
                         "text": status_text,
-                        "size": "sm",
-                        "color": "#666666",
+                        "size": "xl",
+                        "weight": "bold",
+                        "color": "#111827",
                         "wrap": True,
                     },
                     {
                         "type": "text",
                         "text": title,
-                        "size": "md",
+                        "size": "xs",
+                        "color": "#6B7280",
                         "wrap": True,
+                    },
+                    {
+                        "type": "separator",
                         "margin": "lg",
+                    },
+                    {
+                        "type": "box",
+                        "layout": "horizontal",
+                        "margin": "md",
+                        "contents": [
+                            {
+                                "type": "text",
+                                "text": detail_label,
+                                "size": "sm",
+                                "color": "#6B7280",
+                                "flex": 1,
+                            },
+                            {
+                                "type": "text",
+                                "text": detail_text,
+                                "size": "sm",
+                                "color": "#111827",
+                                "align": "end",
+                                "wrap": True,
+                                "flex": 2,
+                            },
+                        ],
                     },
                 ],
             },
             "footer": {
                 "type": "box",
                 "layout": "vertical",
+                "paddingTop": "0px",
+                "paddingStart": "20px",
+                "paddingEnd": "20px",
+                "paddingBottom": "20px",
                 "contents": [
                     {
                         "type": "button",
                         "style": "primary",
+                        "height": "sm",
+                        "color": "#06C755",
                         "action": {
                             "type": "uri",
-                            "label": "開啟報告",
+                            "label": "開啟",
                             "uri": build_note_open_url(target_path),
                         },
                     }
@@ -955,45 +1083,71 @@ def start_report_mode(reply_token: str, user_id: str):
         [
             {
                 "type": "flex",
-                "altText": "問題回報模式",
+                "altText": "Vault 回報",
                 "contents": {
                     "type": "bubble",
                     "body": {
                         "type": "box",
                         "layout": "vertical",
                         "spacing": "md",
+                        "paddingAll": "20px",
                         "contents": [
+                            build_card_header("Vault 回報"),
                             {
                                 "type": "text",
-                                "text": "問題回報模式",
+                                "text": "回報模式已開啟",
                                 "weight": "bold",
                                 "size": "xl",
+                                "color": "#111827",
                                 "wrap": True,
                             },
                             {
                                 "type": "text",
-                                "text": "下一則文字會被記錄到 vault",
-                                "size": "sm",
-                                "color": "#666666",
+                                "text": "下一則訊息會記錄到 vault",
+                                "size": "xs",
+                                "color": "#6B7280",
                                 "wrap": True,
                             },
                             {
-                                "type": "text",
-                                "text": "請直接輸入要回報的問題內容。5 分鐘內未輸入會自動取消；若只是要查詢，請先取消回報。",
-                                "size": "md",
-                                "wrap": True,
+                                "type": "separator",
                                 "margin": "lg",
+                            },
+                            {
+                                "type": "box",
+                                "layout": "horizontal",
+                                "margin": "md",
+                                "contents": [
+                                    {
+                                        "type": "text",
+                                        "text": "有效時間",
+                                        "size": "sm",
+                                        "color": "#6B7280",
+                                        "flex": 1,
+                                    },
+                                    {
+                                        "type": "text",
+                                        "text": "5 分鐘",
+                                        "size": "sm",
+                                        "color": "#111827",
+                                        "align": "end",
+                                        "flex": 2,
+                                    },
+                                ],
                             },
                         ],
                     },
                     "footer": {
                         "type": "box",
                         "layout": "vertical",
-                        "spacing": "sm",
+                        "paddingTop": "0px",
+                        "paddingStart": "20px",
+                        "paddingEnd": "20px",
+                        "paddingBottom": "20px",
                         "contents": [
                             {
                                 "type": "button",
                                 "style": "secondary",
+                                "height": "sm",
                                 "action": {
                                     "type": "postback",
                                     "label": "取消回報",
