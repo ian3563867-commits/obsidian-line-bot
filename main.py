@@ -6,6 +6,7 @@ import re
 import threading
 import html
 import time
+import traceback
 from datetime import datetime
 from urllib.parse import parse_qs, quote, urlencode
 
@@ -32,14 +33,30 @@ OBSIDIAN_VAULT_NAME = os.environ.get("OBSIDIAN_VAULT_NAME", os.path.basename(VAU
 OPEN_NOTE_BASE_URL = os.environ.get("OPEN_NOTE_BASE_URL", "").rstrip("/")
 OPEN_NOTE_TOKEN = os.environ.get("OPEN_NOTE_TOKEN", "").strip()
 OPEN_NOTE_TTL_SECONDS = int(os.environ.get("OPEN_NOTE_TTL_SECONDS", "1800"))
+ANSWER_PAGES_DIR = os.environ.get(
+    "ANSWER_PAGES_DIR",
+    os.path.join(VAULT_DIR, "02_Projects", "9002-VaultLINEBot", "LineBotResults"),
+)
 KNOWLEDGE_ITEMS_PER_PAGE = 5
 KNOWLEDGE_NOTES_LIMIT = 5
 FAST_PREVIEW_LIMIT = 3
 REPORT_MODE_TIMEOUT_SECONDS = 5 * 60
 USER_MODES: dict[str, dict] = {}
 LAST_REQUEST_BASE_URL = ""
+LOG_FILE = os.environ.get("BOT_LOG_FILE", os.path.join(os.path.dirname(__file__), "bot-debug.log"))
 
 app = FastAPI()
+
+
+def log_debug(message: str):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    line = f"[{timestamp}] {message}"
+    print(line)
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception as e:
+        print(f"[LOG ERROR] {e}")
 
 
 def post_line(url: str, payload: dict):
@@ -47,9 +64,10 @@ def post_line(url: str, payload: dict):
         url,
         headers={"Authorization": f"Bearer {CHANNEL_ACCESS_TOKEN}"},
         json=payload,
+        timeout=20,
     )
     if response.status_code >= 400:
-        print(f"[LINE API ERROR] status={response.status_code} body={response.text}")
+        log_debug(f"[LINE API ERROR] status={response.status_code} body={response.text}")
     return response
 
 
@@ -60,21 +78,21 @@ def verify_signature(body: bytes, signature: str) -> bool:
 
 
 def push_message(user_id: str, text: str):
-    post_line(
+    return post_line(
         "https://api.line.me/v2/bot/message/push",
         {"to": user_id, "messages": with_home_quick_reply([{"type": "text", "text": text[:5000]}])},
     )
 
 
 def reply_message(reply_token: str, text: str):
-    post_line(
+    return post_line(
         "https://api.line.me/v2/bot/message/reply",
         {"replyToken": reply_token, "messages": with_home_quick_reply([{"type": "text", "text": text}])},
     )
 
 
 def reply_messages(reply_token: str, messages: list[dict]):
-    post_line(
+    return post_line(
         "https://api.line.me/v2/bot/message/reply",
         {"replyToken": reply_token, "messages": with_home_quick_reply(messages)},
     )
@@ -243,6 +261,110 @@ def build_note_open_url(path: str) -> str:
         "sig": sign_open_note(relative_path, exp),
     }
     return base_url + "/open-note?" + urlencode(params, quote_via=quote)
+
+
+def make_answer_page(kind: str, prompt: str) -> str:
+    os.makedirs(ANSWER_PAGES_DIR, exist_ok=True)
+    timestamp = datetime.now()
+    suffix = int(time.time() * 1000) % 100000
+    filename = f"{timestamp.strftime('%Y%m%d-%H%M%S')}-{kind}-{suffix:05d}.md"
+    path = os.path.join(ANSWER_PAGES_DIR, filename)
+    write_answer_page(path, kind, prompt, "處理中", "Claude 正在整理答案，請稍後重新整理此頁。")
+    return path
+
+
+def write_answer_page(path: str, kind: str, prompt: str, status: str, body: str):
+    title = "LINE Bot 查詢結果" if kind == "query" else "LINE Bot 問題回報結果"
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    content = f"""---
+title: {title}
+date: {datetime.now().strftime("%Y-%m-%d")}
+tags: [LINEBot, 結果頁]
+project: 通用
+---
+
+# {title}
+
+狀態：{status}
+
+更新時間：{now}
+
+## 原始輸入
+
+{prompt}
+
+## 結果
+
+{body}
+"""
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content)
+
+
+def build_answer_page_message(path: str, prompt: str, kind: str) -> dict:
+    title = "查詢結果" if kind == "query" else "問題回報"
+    status = "處理中，稍後刷新頁面"
+    prompt_label = "問題" if kind == "query" else "內容"
+    return {
+        "type": "flex",
+        "altText": title,
+        "contents": {
+            "type": "bubble",
+            "size": "mega",
+            "body": {
+                "type": "box",
+                "layout": "vertical",
+                "spacing": "none",
+                "paddingAll": "16px",
+                "contents": [
+                    {
+                        "type": "text",
+                        "text": title,
+                        "size": "sm",
+                        "color": "#111827",
+                        "wrap": True,
+                    },
+                    {
+                        "type": "text",
+                        "text": status,
+                        "size": "sm",
+                        "color": "#111827",
+                        "wrap": True,
+                        "margin": "sm",
+                    },
+                    {
+                        "type": "text",
+                        "text": f"{prompt_label}：{shorten_label(prompt, 72)}",
+                        "size": "sm",
+                        "color": "#111827",
+                        "wrap": True,
+                        "margin": "sm",
+                    },
+                ],
+            },
+            "footer": {
+                "type": "box",
+                "layout": "vertical",
+                "paddingTop": "0px",
+                "paddingStart": "16px",
+                "paddingEnd": "16px",
+                "paddingBottom": "12px",
+                "contents": [
+                    {
+                        "type": "button",
+                        "style": "primary",
+                        "height": "sm",
+                        "action": {
+                            "type": "uri",
+                            "label": "開啟",
+                            "uri": build_note_open_url(path),
+                        },
+                    }
+                ],
+            },
+        },
+        "quickReply": build_home_quick_reply(),
+    }
 
 
 def sign_open_note(file_path: str, exp: int) -> str:
@@ -888,18 +1010,81 @@ def start_report_mode(reply_token: str, user_id: str):
 
 
 def run_agent_and_push(user_id: str, prompt: str):
-    answer = ask_agent(prompt)
-    push_message(user_id, answer)
+    start = time.time()
+    log_debug(f"[AGENT START] user={user_id} backend={AGENT_BACKEND} prompt={prompt[:80]!r}")
+    try:
+        answer = ask_agent(prompt)
+        log_debug(f"[AGENT DONE] user={user_id} elapsed={time.time() - start:.1f}s answer_len={len(answer or '')}")
+        response = push_message(user_id, answer or "查詢完成，但沒有產生內容。")
+        if response.status_code < 400:
+            log_debug(f"[PUSH DONE] user={user_id} elapsed={time.time() - start:.1f}s")
+        else:
+            log_debug(
+                f"[PUSH FAILED] user={user_id} elapsed={time.time() - start:.1f}s "
+                f"status={response.status_code} body={response.text}"
+            )
+    except Exception as e:
+        log_debug(f"[AGENT ERROR] user={user_id} elapsed={time.time() - start:.1f}s error={e}\n{traceback.format_exc()}")
+        try:
+            push_message(user_id, f"查詢失敗：{e}")
+        except Exception as push_error:
+            log_debug(f"[PUSH ERROR] user={user_id} error={push_error}\n{traceback.format_exc()}")
+
+
+def run_agent_to_page(user_id: str, prompt: str, page_path: str):
+    start = time.time()
+    log_debug(f"[AGENT PAGE START] user={user_id} backend={AGENT_BACKEND} page={page_path} prompt={prompt[:80]!r}")
+    try:
+        answer = ask_agent(prompt)
+        log_debug(f"[AGENT PAGE DONE] user={user_id} elapsed={time.time() - start:.1f}s answer_len={len(answer or '')}")
+        write_answer_page(page_path, "query", prompt, "完成", answer or "查詢完成，但沒有產生內容。")
+    except Exception as e:
+        log_debug(f"[AGENT PAGE ERROR] user={user_id} elapsed={time.time() - start:.1f}s error={e}\n{traceback.format_exc()}")
+        write_answer_page(page_path, "query", prompt, "失敗", f"查詢失敗：{e}")
 
 
 def run_report_and_push(user_id: str, report_text: str):
-    prompt = (
-        "幫我新增到筆記，以下是問題回報內容。\n"
-        "請沿用目前 vault 既有寫入規則與品質標準處理。\n\n"
-        f"{report_text}"
-    )
-    answer = ask_agent(prompt)
-    push_message(user_id, format_report_result(answer))
+    start = time.time()
+    log_debug(f"[REPORT START] user={user_id} backend={AGENT_BACKEND} text={report_text[:80]!r}")
+    try:
+        prompt = (
+            "幫我新增到筆記，以下是問題回報內容。\n"
+            "請沿用目前 vault 既有寫入規則與品質標準處理。\n\n"
+            f"{report_text}"
+        )
+        answer = ask_agent(prompt)
+        log_debug(f"[REPORT DONE] user={user_id} elapsed={time.time() - start:.1f}s answer_len={len(answer or '')}")
+        response = push_message(user_id, format_report_result(answer or "整理完成，但沒有產生內容。"))
+        if response.status_code < 400:
+            log_debug(f"[REPORT PUSH DONE] user={user_id} elapsed={time.time() - start:.1f}s")
+        else:
+            log_debug(
+                f"[REPORT PUSH FAILED] user={user_id} elapsed={time.time() - start:.1f}s "
+                f"status={response.status_code} body={response.text}"
+            )
+    except Exception as e:
+        log_debug(f"[REPORT ERROR] user={user_id} elapsed={time.time() - start:.1f}s error={e}\n{traceback.format_exc()}")
+        try:
+            push_message(user_id, f"寫入失敗：{e}")
+        except Exception as push_error:
+            log_debug(f"[REPORT PUSH ERROR] user={user_id} error={push_error}\n{traceback.format_exc()}")
+
+
+def run_report_to_page(user_id: str, report_text: str, page_path: str):
+    start = time.time()
+    log_debug(f"[REPORT PAGE START] user={user_id} backend={AGENT_BACKEND} page={page_path} text={report_text[:80]!r}")
+    try:
+        prompt = (
+            "幫我新增到筆記，以下是問題回報內容。\n"
+            "請沿用目前 vault 既有寫入規則與品質標準處理。\n\n"
+            f"{report_text}"
+        )
+        answer = ask_agent(prompt)
+        log_debug(f"[REPORT PAGE DONE] user={user_id} elapsed={time.time() - start:.1f}s answer_len={len(answer or '')}")
+        write_answer_page(page_path, "report", report_text, "完成", format_report_result(answer or "整理完成，但沒有產生內容。"))
+    except Exception as e:
+        log_debug(f"[REPORT PAGE ERROR] user={user_id} elapsed={time.time() - start:.1f}s error={e}\n{traceback.format_exc()}")
+        write_answer_page(page_path, "report", report_text, "失敗", f"寫入失敗：{e}")
 
 
 def format_report_result(answer: str) -> str:
@@ -1044,28 +1229,37 @@ async def webhook(request: Request):
         had_mode = user_id in USER_MODES
         mode = get_user_mode(user_id)
         if had_mode and not mode:
-            reply_message(reply_token, "問題回報模式已超過 5 分鐘自動取消。這次改用一般查詢處理，思考中請稍候…")
+            page_path = make_answer_page("query", user_text)
+            reply_messages(
+                reply_token,
+                [
+                    {"type": "text", "text": "問題回報模式已超過 5 分鐘自動取消。這次改用一般查詢處理。"},
+                    build_answer_page_message(page_path, user_text, "query"),
+                ],
+            )
             threading.Thread(
-                target=run_agent_and_push,
-                args=(user_id, user_text),
+                target=run_agent_to_page,
+                args=(user_id, user_text, page_path),
                 daemon=True,
             ).start()
             continue
 
         if mode == "report":
             clear_user_mode(user_id)
-            reply_message(reply_token, "已收到，正在整理並寫入 vault…")
+            page_path = make_answer_page("report", user_text)
+            reply_messages(reply_token, [build_answer_page_message(page_path, user_text, "report")])
             threading.Thread(
-                target=run_report_and_push,
-                args=(user_id, user_text),
+                target=run_report_to_page,
+                args=(user_id, user_text, page_path),
                 daemon=True,
             ).start()
             continue
 
-        reply_message(reply_token, build_fast_preview(user_text))
+        page_path = make_answer_page("query", user_text)
+        reply_messages(reply_token, [build_answer_page_message(page_path, user_text, "query")])
         threading.Thread(
-            target=run_agent_and_push,
-            args=(user_id, user_text),
+            target=run_agent_to_page,
+            args=(user_id, user_text, page_path),
             daemon=True,
         ).start()
 

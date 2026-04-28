@@ -14,7 +14,7 @@ import main
 CALLS = []
 
 
-def fake_post(url, headers=None, json=None):
+def fake_post(url, headers=None, json=None, **kwargs):
     CALLS.append({"url": url, "json": json})
 
     class Resp:
@@ -27,6 +27,49 @@ def fake_ask_agent(prompt):
     if "問題回報內容" in prompt:
         return "已存到 00_Inbox/20260424-SampleProjectD問題回報.md"
     return f"AGENT:{prompt[:40]}"
+
+
+def text_messages():
+    texts = []
+    for call in CALLS:
+        for message in call["json"].get("messages", []):
+            if "text" in message:
+                texts.append(message["text"])
+    return texts
+
+
+def wait_for_text(pattern, timeout=2):
+    end = time.time() + timeout
+    while time.time() < end:
+        if any(pattern in text for text in text_messages()):
+            return True
+        time.sleep(0.01)
+    return False
+
+
+def wait_for_text_prefix(prefix, timeout=2):
+    end = time.time() + timeout
+    while time.time() < end:
+        if any(text.startswith(prefix) for text in text_messages()):
+            return True
+        time.sleep(0.01)
+    return False
+
+
+def wait_for_file_contains(root, pattern, timeout=2):
+    end = time.time() + timeout
+    while time.time() < end:
+        if os.path.isdir(root):
+            for dirpath, _, filenames in os.walk(root):
+                for filename in filenames:
+                    if not filename.endswith(".md"):
+                        continue
+                    path = os.path.join(dirpath, filename)
+                    with open(path, "r", encoding="utf-8") as f:
+                        if pattern in f.read():
+                            return True
+        time.sleep(0.01)
+    return False
 
 
 def sign(payload):
@@ -60,9 +103,11 @@ def run():
     old_obsidian_vault_name = main.OBSIDIAN_VAULT_NAME
     old_open_note_token = main.OPEN_NOTE_TOKEN
     old_open_note_ttl_seconds = main.OPEN_NOTE_TTL_SECONDS
+    old_answer_pages_dir = main.ANSWER_PAGES_DIR
     main.VAULT_DIR = temp_vault.name
     main.KNOWLEDGE_DIR = os.path.join(temp_vault.name, "04_Knowledge")
     main.DAILY_DIR = os.path.join(temp_vault.name, "03_Daily")
+    main.ANSWER_PAGES_DIR = os.path.join(temp_vault.name, "02_Projects", "9002-VaultLINEBot", "LineBotResults")
     main.OBSIDIAN_VAULT_NAME = "my-vault-test"
     main.OPEN_NOTE_TOKEN = "secret-token"
     main.OPEN_NOTE_TTL_SECONDS = 1800
@@ -208,9 +253,9 @@ def run():
             "message": {"type": "text", "text": "SampleProjectD現場入庫異常"},
         },
     )
-    assert "已收到，正在整理並寫入 vault" in CALLS[-2]["json"]["messages"][0]["text"]
-    assert "已記錄到 vault" in CALLS[-1]["json"]["messages"][0]["text"]
-    assert "00_Inbox\\20260424-SampleProjectD問題回報.md" in CALLS[-1]["json"]["messages"][0]["text"]
+    assert CALLS[-1]["json"]["messages"][0]["altText"] == "問題回報"
+    assert wait_for_file_contains(main.ANSWER_PAGES_DIR, "已記錄到 vault")
+    assert wait_for_file_contains(main.ANSWER_PAGES_DIR, "00_Inbox\\20260424-SampleProjectD問題回報.md")
     assert [item["action"]["label"] for item in CALLS[-1]["json"]["messages"][0]["quickReply"]["items"]] == [
         "查詢專案",
         "回報問題",
@@ -236,8 +281,8 @@ def run():
             "message": {"type": "text", "text": "查一下SampleProjectD狀態"},
         },
     )
-    assert "自動取消" in CALLS[-2]["json"]["messages"][0]["text"]
-    assert CALLS[-1]["json"]["messages"][0]["text"].startswith("AGENT:")
+    assert wait_for_text("自動取消")
+    assert wait_for_file_contains(main.ANSWER_PAGES_DIR, "AGENT:")
 
     send_event(
         client,
@@ -330,9 +375,9 @@ def run():
             "message": {"type": "text", "text": "SampleProjectD ASRS 目前問題"},
         },
     )
-    assert "已找到可能相關資料" in CALLS[-2]["json"]["messages"][0]["text"]
-    assert "20260409-問題紀錄" in CALLS[-2]["json"]["messages"][0]["text"]
-    assert CALLS[-1]["json"]["messages"][0]["text"].startswith("AGENT:")
+    assert CALLS[-1]["json"]["messages"][0]["altText"] == "查詢結果"
+    assert wait_for_file_contains(main.ANSWER_PAGES_DIR, "SampleProjectD ASRS 目前問題")
+    assert wait_for_file_contains(main.ANSWER_PAGES_DIR, "AGENT:")
 
     print("OK")
 
@@ -342,6 +387,7 @@ def run():
     main.OBSIDIAN_VAULT_NAME = old_obsidian_vault_name
     main.OPEN_NOTE_TOKEN = old_open_note_token
     main.OPEN_NOTE_TTL_SECONDS = old_open_note_ttl_seconds
+    main.ANSWER_PAGES_DIR = old_answer_pages_dir
     temp_vault.cleanup()
 
 
