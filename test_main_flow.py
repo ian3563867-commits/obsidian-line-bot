@@ -112,6 +112,28 @@ def run():
         client,
         {
             "type": "message",
+            "replyToken": "r-menu",
+            "source": {"userId": "test-user"},
+            "message": {"type": "text", "text": "選單"},
+        },
+    )
+    menu_msg = CALLS[-1]["json"]["messages"][0]
+    assert menu_msg["type"] == "flex"
+    assert menu_msg["altText"] == "功能選單"
+    assert [item["action"]["label"] for item in menu_msg["quickReply"]["items"]] == [
+        "查詢專案",
+        "回報問題",
+        "Daily Report",
+    ]
+    assert [
+        item["action"]["label"]
+        for item in menu_msg["contents"]["footer"]["contents"]
+    ] == ["查詢專案", "回報問題", "Daily Report"]
+
+    send_event(
+        client,
+        {
+            "type": "message",
             "replyToken": "r1",
             "source": {"userId": "test-user"},
             "message": {"type": "text", "text": "查詢專案"},
@@ -189,6 +211,11 @@ def run():
     assert "已收到，正在整理並寫入 vault" in CALLS[-2]["json"]["messages"][0]["text"]
     assert "已記錄到 vault" in CALLS[-1]["json"]["messages"][0]["text"]
     assert "00_Inbox\\20260424-SampleProjectD問題回報.md" in CALLS[-1]["json"]["messages"][0]["text"]
+    assert [item["action"]["label"] for item in CALLS[-1]["json"]["messages"][0]["quickReply"]["items"]] == [
+        "查詢專案",
+        "回報問題",
+        "Daily Report",
+    ]
 
     send_event(
         client,

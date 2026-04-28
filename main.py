@@ -62,22 +62,30 @@ def verify_signature(body: bytes, signature: str) -> bool:
 def push_message(user_id: str, text: str):
     post_line(
         "https://api.line.me/v2/bot/message/push",
-        {"to": user_id, "messages": [{"type": "text", "text": text[:5000]}]},
+        {"to": user_id, "messages": with_home_quick_reply([{"type": "text", "text": text[:5000]}])},
     )
 
 
 def reply_message(reply_token: str, text: str):
     post_line(
         "https://api.line.me/v2/bot/message/reply",
-        {"replyToken": reply_token, "messages": [{"type": "text", "text": text}]},
+        {"replyToken": reply_token, "messages": with_home_quick_reply([{"type": "text", "text": text}])},
     )
 
 
 def reply_messages(reply_token: str, messages: list[dict]):
     post_line(
         "https://api.line.me/v2/bot/message/reply",
-        {"replyToken": reply_token, "messages": messages},
+        {"replyToken": reply_token, "messages": with_home_quick_reply(messages)},
     )
+
+
+def with_home_quick_reply(messages: list[dict]) -> list[dict]:
+    if not messages:
+        return messages
+    prepared = [message.copy() for message in messages]
+    prepared[-1].setdefault("quickReply", build_home_quick_reply())
+    return prepared
 
 
 def ask_agent(prompt: str) -> str:
@@ -314,7 +322,104 @@ def parse_postback(data: str) -> tuple[str, dict[str, str]]:
 
 
 def build_home_text() -> str:
-    return "請用下方 Rich Menu 操作，或直接輸入內容。"
+    return "請用下方 Rich Menu 操作，或輸入「選單」顯示功能按鈕。"
+
+
+def build_home_quick_reply() -> dict:
+    return {
+        "items": [
+            {
+                "type": "action",
+                "action": {
+                    "type": "message",
+                    "label": "查詢專案",
+                    "text": "查詢專案",
+                },
+            },
+            {
+                "type": "action",
+                "action": {
+                    "type": "message",
+                    "label": "回報問題",
+                    "text": "回報問題",
+                },
+            },
+            {
+                "type": "action",
+                "action": {
+                    "type": "message",
+                    "label": "Daily Report",
+                    "text": "今日 Daily Report",
+                },
+            },
+        ]
+    }
+
+
+def build_home_menu_message() -> dict:
+    return {
+        "type": "flex",
+        "altText": "功能選單",
+        "contents": {
+            "type": "bubble",
+            "body": {
+                "type": "box",
+                "layout": "vertical",
+                "spacing": "md",
+                "contents": [
+                    {
+                        "type": "text",
+                        "text": "功能選單",
+                        "weight": "bold",
+                        "size": "xl",
+                        "wrap": True,
+                    },
+                    {
+                        "type": "text",
+                        "text": "電腦版 LINE 可用下方按鈕操作；手機版也可以繼續使用 Rich Menu。",
+                        "size": "sm",
+                        "color": "#666666",
+                        "wrap": True,
+                    },
+                ],
+            },
+            "footer": {
+                "type": "box",
+                "layout": "vertical",
+                "spacing": "sm",
+                "contents": [
+                    {
+                        "type": "button",
+                        "style": "primary",
+                        "action": {
+                            "type": "message",
+                            "label": "查詢專案",
+                            "text": "查詢專案",
+                        },
+                    },
+                    {
+                        "type": "button",
+                        "style": "secondary",
+                        "action": {
+                            "type": "message",
+                            "label": "回報問題",
+                            "text": "回報問題",
+                        },
+                    },
+                    {
+                        "type": "button",
+                        "style": "secondary",
+                        "action": {
+                            "type": "message",
+                            "label": "Daily Report",
+                            "text": "今日 Daily Report",
+                        },
+                    },
+                ],
+            },
+        },
+        "quickReply": build_home_quick_reply(),
+    }
 
 
 def set_user_mode(user_id: str, mode: str):
@@ -368,6 +473,7 @@ def build_project_list_flex(page: int = 0) -> dict:
                     ],
                 },
             },
+            "quickReply": build_home_quick_reply(),
         }
 
     bubbles = []
@@ -384,6 +490,7 @@ def build_project_list_flex(page: int = 0) -> dict:
             "type": "carousel",
             "contents": bubbles,
         },
+        "quickReply": build_home_quick_reply(),
     }
 
 
@@ -447,7 +554,11 @@ def build_project_page_bubble(page_items: list[str], page: int, total_pages: int
 def build_project_summary(project_name: str) -> dict:
     knowledge_folder = os.path.join(KNOWLEDGE_DIR, project_name)
     if not os.path.isdir(knowledge_folder):
-        return {"type": "text", "text": f"找不到 Knowledge：{project_name}"}
+        return {
+            "type": "text",
+            "text": f"找不到 Knowledge：{project_name}",
+            "quickReply": build_home_quick_reply(),
+        }
 
     recent_notes = get_recent_markdown_notes(knowledge_folder)
     contents: list[dict] = [
@@ -504,6 +615,7 @@ def build_project_summary(project_name: str) -> dict:
                 "contents": contents,
             },
         },
+        "quickReply": build_home_quick_reply(),
     }
 
 
@@ -511,7 +623,11 @@ def build_daily_report_message() -> dict:
     today_path = get_today_daily_report_path()
     latest_path = get_latest_daily_report_path()
     if not today_path and not latest_path:
-        return {"type": "text", "text": "目前找不到 Daily Report。"}
+        return {
+            "type": "text",
+            "text": "目前找不到 Daily Report。",
+            "quickReply": build_home_quick_reply(),
+        }
 
     target_path = today_path or latest_path
     title = os.path.splitext(os.path.basename(target_path))[0]
@@ -564,6 +680,7 @@ def build_daily_report_message() -> dict:
                 ],
             },
         },
+        "quickReply": build_home_quick_reply(),
     }
 
 
@@ -886,7 +1003,12 @@ async def webhook(request: Request):
 
         user_text = event["message"]["text"].strip()
         if not user_text:
-            reply_message(reply_token, build_home_text())
+            reply_messages(reply_token, [build_home_menu_message()])
+            continue
+
+        if user_text.lower() in {"選單", "menu", "功能", "功能選單"}:
+            clear_user_mode(user_id)
+            reply_messages(reply_token, [build_home_menu_message()])
             continue
 
         if user_text in {"取消", "取消回報"}:
