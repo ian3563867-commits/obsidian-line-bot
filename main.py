@@ -266,11 +266,11 @@ def get_latest_daily_report_path() -> str:
     notes = [
         os.path.join(DAILY_DIR, name)
         for name in os.listdir(DAILY_DIR)
-        if name.lower().endswith(".md")
+        if re.fullmatch(r"\d{8}-daily-report\.md", name.lower())
     ]
     if not notes:
         return ""
-    return max(notes, key=os.path.getmtime)
+    return max(notes, key=lambda path: os.path.basename(path))
 
 
 def shorten_label(text: str, limit: int = 40) -> str:

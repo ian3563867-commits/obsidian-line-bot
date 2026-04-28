@@ -91,6 +91,21 @@ def run():
     ) as f:
         f.write("# Daily Report\n\n| 項目 | 狀態 |\n|---|---|\n| 測試 | OK |\n")
 
+    with open(
+        os.path.join(main.DAILY_DIR, "20260425-daily-report.md"),
+        "w",
+        encoding="utf-8",
+    ) as f:
+        f.write("# Daily Report 2026-04-25\n\n| item | status |\n|---|---|\n| test | OK |\n")
+    os.utime(
+        os.path.join(main.DAILY_DIR, "20260425-daily-report.md"),
+        (time.time() - 120, time.time() - 120),
+    )
+    os.utime(
+        os.path.join(main.DAILY_DIR, "20260424-daily-report.md"),
+        (time.time(), time.time()),
+    )
+
     client = TestClient(main.app)
 
     send_event(
@@ -269,7 +284,8 @@ def run():
     daily_button = daily_msg["contents"]["footer"]["contents"][0]
     assert daily_button["action"]["uri"].startswith("http://testserver/open-note?")
     assert "sig=" in daily_button["action"]["uri"]
-    daily_file = "03_Daily/20260424-daily-report.md"
+    assert "20260425-daily-report" in daily_msg["contents"]["body"]["contents"][2]["text"]
+    daily_file = "03_Daily/20260425-daily-report.md"
     daily_exp = int(time.time()) + 60
     daily_response = client.get(
         "/open-note",
