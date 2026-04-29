@@ -38,7 +38,7 @@ ANSWER_PAGES_DIR = os.environ.get(
     os.path.join(VAULT_DIR, "02_Projects", "9002-VaultLINEBot", "LineBotResults"),
 )
 KNOWLEDGE_ITEMS_PER_PAGE = 5
-KNOWLEDGE_NOTES_LIMIT = 5
+KNOWLEDGE_NOTES_PER_PAGE = 5
 FAST_PREVIEW_LIMIT = 3
 REPORT_MODE_TIMEOUT_SECONDS = 5 * 60
 USER_MODES: dict[str, dict] = {}
@@ -222,7 +222,7 @@ def get_project_names() -> list[str]:
     return sorted(names)
 
 
-def get_recent_markdown_notes(folder: str, limit: int = KNOWLEDGE_NOTES_LIMIT) -> list[str]:
+def get_recent_markdown_notes(folder: str, limit: int | None = None) -> list[str]:
     if not os.path.isdir(folder):
         return []
     notes: list[tuple[float, str]] = []
@@ -232,7 +232,10 @@ def get_recent_markdown_notes(folder: str, limit: int = KNOWLEDGE_NOTES_LIMIT) -
             if name.lower().endswith(".md"):
                 path = os.path.join(root, name)
                 notes.append((os.path.getmtime(path), path))
-    return [path for _, path in sorted(notes, reverse=True)[:limit]]
+    sorted_paths = [path for _, path in sorted(notes, reverse=True)]
+    if limit is None:
+        return sorted_paths
+    return sorted_paths[:limit]
 
 
 def build_obsidian_uri(path: str) -> str:
@@ -779,6 +782,44 @@ def build_project_summary(project_name: str) -> dict:
         }
 
     recent_notes = get_recent_markdown_notes(knowledge_folder)
+    total_pages = max((len(recent_notes) - 1) // KNOWLEDGE_NOTES_PER_PAGE + 1, 1)
+    if len(recent_notes) > KNOWLEDGE_NOTES_PER_PAGE:
+        bubbles = []
+        for page_index in range(total_pages):
+            start = page_index * KNOWLEDGE_NOTES_PER_PAGE
+            end = start + KNOWLEDGE_NOTES_PER_PAGE
+            bubbles.append(
+                build_project_summary_bubble(
+                    project_name,
+                    recent_notes[start:end],
+                    page_index,
+                    total_pages,
+                )
+            )
+        return {
+            "type": "flex",
+            "altText": f"{project_name} Knowledge 筆記",
+            "contents": {
+                "type": "carousel",
+                "contents": bubbles,
+            },
+            "quickReply": build_home_quick_reply(),
+        }
+
+    return {
+        "type": "flex",
+        "altText": f"{project_name} Knowledge 筆記",
+        "contents": build_project_summary_bubble(project_name, recent_notes, 0, total_pages),
+        "quickReply": build_home_quick_reply(),
+    }
+
+
+def build_project_summary_bubble(
+    project_name: str,
+    recent_notes: list[str],
+    page: int = 0,
+    total_pages: int = 1,
+) -> dict:
     contents: list[dict] = [
         {
             "type": "text",
@@ -795,6 +836,16 @@ def build_project_summary(project_name: str) -> dict:
             "margin": "sm",
         },
     ]
+    if total_pages > 1:
+        contents.append(
+            {
+                "type": "text",
+                "text": f"第 {page + 1} / {total_pages} 頁",
+                "size": "xs",
+                "color": "#999999",
+                "margin": "xs",
+            }
+        )
     if not recent_notes:
         contents.append(
             {
@@ -823,17 +874,12 @@ def build_project_summary(project_name: str) -> dict:
             )
 
     return {
-        "type": "flex",
-        "altText": f"{project_name} Knowledge 筆記",
-        "contents": {
-            "type": "bubble",
-            "body": {
-                "type": "box",
-                "layout": "vertical",
-                "contents": contents,
-            },
+        "type": "bubble",
+        "body": {
+            "type": "box",
+            "layout": "vertical",
+            "contents": contents,
         },
-        "quickReply": build_home_quick_reply(),
     }
 
 

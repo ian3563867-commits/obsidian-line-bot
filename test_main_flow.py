@@ -151,6 +151,13 @@ def run():
         encoding="utf-8",
     ) as f:
         f.write("# Daily Report 2026-04-25\n\n| item | status |\n|---|---|\n| test | OK |\n")
+    it_folder = os.path.join(main.KNOWLEDGE_DIR, "IT通用")
+    os.makedirs(it_folder, exist_ok=True)
+    for idx in range(1, 8):
+        note_path = os.path.join(it_folder, f"2026042{idx}-IT通用測試{idx}.md")
+        with open(note_path, "w", encoding="utf-8") as f:
+            f.write(f"# IT通用測試{idx}\n")
+        os.utime(note_path, (time.time() + idx, time.time() + idx))
     os.utime(
         os.path.join(main.DAILY_DIR, "20260425-daily-report.md"),
         (time.time() - 120, time.time() - 120),
@@ -321,6 +328,16 @@ def run():
     assert "exp=" in note_button["action"]["uri"]
     assert "sig=" in note_button["action"]["uri"]
     assert "token=secret-token" not in note_button["action"]["uri"]
+    it_summary = main.build_project_summary("IT通用")
+    assert it_summary["contents"]["type"] == "carousel"
+    assert len(it_summary["contents"]["contents"]) == 2
+    it_note_buttons = [
+        item
+        for bubble in it_summary["contents"]["contents"]
+        for item in bubble["body"]["contents"]
+        if item.get("type") == "button"
+    ]
+    assert len(it_note_buttons) == 7
     denied_response = client.get(
         "/open-note",
         params={"file": "04_Knowledge/0102-SampleProjectD/20260424-SampleProjectD測試.md"},
