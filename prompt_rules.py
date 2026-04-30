@@ -6,12 +6,21 @@ def is_life(prompt: str) -> bool:
     return any(k in lower for k in _LIFE_KEYWORDS)
 
 
-def build_vault_prompt(prompt: str) -> str:
+def build_vault_prompt(prompt: str, allow_write: bool = False) -> str:
     life = is_life(prompt)
-    execution_rule = (
-        "【執行要求】你現在不是在確認規則，而是要立刻完成使用者問題。\n"
-        "禁止只回答「收到」、「我會遵守」或重述規則；必須實際查詢、整理或寫入。\n\n"
-    )
+    if allow_write:
+        execution_rule = (
+            "【執行要求】你現在不是在確認規則，而是要立刻完成使用者問題。\n"
+            "禁止只回答「收到」、「我會遵守」或重述規則；必須實際查詢、整理或寫入。\n"
+            "本次已由系統確認為寫入模式，允許新增 vault 筆記。\n\n"
+        )
+    else:
+        execution_rule = (
+            "【執行要求】你現在不是在確認規則，而是要立刻完成使用者問題。\n"
+            "禁止只回答「收到」、「我會遵守」或重述規則；必須實際查詢或整理回答。\n"
+            "本次是查詢 / 討論模式，不是寫入模式。禁止建立、修改、刪除或移動任何 vault 檔案；"
+            "即使使用者輸入看起來像事件紀錄，也只能查詢或討論，不能寫入 vault。\n\n"
+        )
 
     if life:
         classification_rule = (
@@ -57,18 +66,27 @@ def build_vault_prompt(prompt: str) -> str:
             "Step 4: 整合所有已讀資料後回答，結尾列出所有實際參考來源檔案路徑。\n\n"
         )
 
-    write_rule = (
-        "【寫入規則】若需要寫入 vault，一律存到 00_Inbox/ 資料夾。\n"
-        "若使用者訊息含有「生活/Life/life/個人/personal」，"
-        "frontmatter tags 必須包含 life。\n\n"
-    )
+    if allow_write:
+        write_rule = (
+            "【寫入規則】若需要寫入 vault，一律存到 00_Inbox/ 資料夾。\n"
+            "若使用者訊息含有「生活/Life/life/個人/personal」，"
+            "frontmatter tags 必須包含 life。\n\n"
+        )
+    else:
+        write_rule = (
+            "【寫入規則】本次禁止寫入 vault。\n"
+            "若使用者內容需要沉澱成筆記，只能在回答中建議使用「回報問題」或「紀錄：」重新觸發寫入模式，"
+            "不得自行新增到 00_Inbox 或任何正式筆記資料夾。\n\n"
+        )
 
     format_rule = (
         "【回覆格式】純文字，不要用 Markdown（不用 **粗體**、不用表格、不用 # 標題）。"
         "用「─」分隔區塊、用「•」列點、欄位用「：」對齊。"
         "因為訊息會顯示在 LINE，Markdown 不會渲染。\n"
         "若使用者查詢 MSG、JSON、API、SQL、模板或範例，必須完整保留命中的連續程式碼/JSON區塊，"
-        "不可只摘要 EventID 或省略 Header、Body、KeepData、欄位清單；若同一檔案有多個相關模板，需逐一完整列出。\n\n"
+        "不可只摘要 EventID 或省略 Header、Body、KeepData、欄位清單；若同一檔案有多個相關模板，需逐一完整列出。\n"
+        "MSG、JSON、API payload、SQL、指令或程式碼必須使用 Markdown fenced code block 包起來，"
+        "例如 ```json、```sql 或 ```text，方便結果頁排版與複製。\n\n"
     )
 
     return execution_rule + classification_rule + query_steps + write_rule + format_rule + "【使用者問題】\n" + prompt

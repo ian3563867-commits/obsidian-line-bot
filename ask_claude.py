@@ -17,9 +17,9 @@ def _build_cmd() -> list:
     return ["claude", "-p", "--output-format", "text"]
 
 
-def ask_claude(prompt: str) -> str:
+def ask_claude(prompt: str, allow_write: bool = False) -> str:
     try:
-        full_prompt = build_vault_prompt(prompt)
+        full_prompt = build_vault_prompt(prompt, allow_write=allow_write)
         result = subprocess.run(
             _build_cmd(),
             input=full_prompt,

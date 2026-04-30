@@ -7,6 +7,7 @@ import threading
 import html
 import time
 import traceback
+import json
 from datetime import datetime
 from urllib.parse import parse_qs, quote, urlencode
 
@@ -33,6 +34,7 @@ OBSIDIAN_VAULT_NAME = os.environ.get("OBSIDIAN_VAULT_NAME", os.path.basename(VAU
 OPEN_NOTE_BASE_URL = os.environ.get("OPEN_NOTE_BASE_URL", "").rstrip("/")
 OPEN_NOTE_TOKEN = os.environ.get("OPEN_NOTE_TOKEN", "").strip()
 OPEN_NOTE_TTL_SECONDS = int(os.environ.get("OPEN_NOTE_TTL_SECONDS", "1800"))
+OPEN_NOTE_RESULT_TTL_SECONDS = int(os.environ.get("OPEN_NOTE_RESULT_TTL_SECONDS", "0"))
 ANSWER_PAGES_DIR = os.environ.get(
     "ANSWER_PAGES_DIR",
     os.path.join(VAULT_DIR, "02_Projects", "9002-VaultLINEBot", "LineBotResults"),
@@ -108,12 +110,26 @@ def with_home_quick_reply(messages: list[dict]) -> list[dict]:
     return prepared
 
 
-def ask_agent(prompt: str) -> str:
+def ask_agent(prompt: str, allow_write: bool = False) -> str:
     if AGENT_BACKEND == "claude":
-        return ask_claude(prompt)
+        return ask_claude(prompt, allow_write=allow_write)
     if AGENT_BACKEND == "codex":
-        return ask_codex(prompt)
+        return ask_codex(prompt, allow_write=allow_write)
     return f"未知 AGENT_BACKEND={AGENT_BACKEND}，請設定為 claude 或 codex。"
+
+
+WRITE_PREFIXES = ("紀錄：", "紀錄:", "記錄：", "記錄:", "新增紀錄：", "新增紀錄:", "新增記錄：", "新增記錄:")
+QUERY_PREFIXES = ("查詢：", "查詢:", "討論：", "討論:")
+
+
+def parse_input_mode(user_text: str) -> tuple[str, str]:
+    for prefix in WRITE_PREFIXES:
+        if user_text.startswith(prefix):
+            return "report", user_text[len(prefix):].strip()
+    for prefix in QUERY_PREFIXES:
+        if user_text.startswith(prefix):
+            return "query", user_text[len(prefix):].strip()
+    return "query", user_text
 
 
 def build_fast_preview(user_text: str) -> str:
@@ -259,13 +275,22 @@ def build_note_open_url(path: str) -> str:
         return "https://example.com/"
     if not OPEN_NOTE_TOKEN:
         return base_url + "/open-note?" + urlencode({"file": relative_path}, quote_via=quote)
-    exp = int(time.time()) + OPEN_NOTE_TTL_SECONDS
+    ttl_seconds = get_open_note_ttl_seconds(path)
+    exp = int(time.time()) + ttl_seconds if ttl_seconds > 0 else 0
     params = {
         "file": relative_path,
         "exp": str(exp),
         "sig": sign_open_note(relative_path, exp),
     }
     return base_url + "/open-note?" + urlencode(params, quote_via=quote)
+
+
+def get_open_note_ttl_seconds(path: str) -> int:
+    target_path = os.path.abspath(path)
+    answer_pages_root = os.path.abspath(ANSWER_PAGES_DIR)
+    if target_path == answer_pages_root or target_path.startswith(answer_pages_root + os.sep):
+        return OPEN_NOTE_RESULT_TTL_SECONDS
+    return OPEN_NOTE_TTL_SECONDS
 
 
 def make_answer_page(kind: str, prompt: str) -> str:
@@ -482,7 +507,7 @@ def sign_open_note(file_path: str, exp: int) -> str:
 def verify_open_note_signature(file_path: str, exp: int, sig: str):
     if not OPEN_NOTE_TOKEN:
         raise HTTPException(status_code=503, detail="OPEN_NOTE_TOKEN is not configured")
-    if exp < int(time.time()):
+    if exp > 0 and exp < int(time.time()):
         raise HTTPException(status_code=403, detail="Open-note link expired")
     expected = sign_open_note(file_path, exp)
     if not hmac.compare_digest(sig, expected):
@@ -520,11 +545,53 @@ def strip_frontmatter(content: str) -> str:
     return content
 
 
+def auto_fence_json_blocks(content: str) -> str:
+    lines = content.splitlines()
+    rendered: list[str] = []
+    in_fence = False
+    i = 0
+
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            rendered.append(line)
+            i += 1
+            continue
+
+        if not in_fence and stripped in {"{", "["}:
+            candidate: list[str] = []
+            j = i
+            while j < len(lines):
+                candidate.append(lines[j])
+                try:
+                    json.loads("\n".join(candidate))
+                    rendered.append("```json")
+                    rendered.extend(candidate)
+                    rendered.append("```")
+                    i = j + 1
+                    break
+                except json.JSONDecodeError:
+                    j += 1
+            else:
+                rendered.append(line)
+                i += 1
+            continue
+
+        rendered.append(line)
+        i += 1
+
+    return "\n".join(rendered)
+
+
 def render_markdown(content: str) -> str:
+    prepared_content = auto_fence_json_blocks(strip_frontmatter(content))
     return markdown.markdown(
-        strip_frontmatter(content),
+        prepared_content,
         extensions=[
             "extra",
+            "fenced_code",
             "sane_lists",
             "nl2br",
             "toc",
@@ -1087,11 +1154,41 @@ def open_note(file: str, exp: int = 0, sig: str = ""):
       font-size: 0.92em;
     }}
     .content pre {{
+      position: relative;
       background: #111827;
       color: #f9fafb;
       border-radius: 8px;
       padding: 12px;
       overflow-x: auto;
+    }}
+    .code-block {{
+      position: relative;
+      margin: 14px 0;
+    }}
+    .code-block pre {{
+      margin: 0;
+      padding-top: 42px;
+    }}
+    .copy-code {{
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      z-index: 1;
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      border-radius: 6px;
+      padding: 5px 9px;
+      background: rgba(17, 24, 39, 0.92);
+      color: #f9fafb;
+      font-size: 12px;
+      line-height: 1;
+      cursor: pointer;
+    }}
+    .copy-code:hover {{
+      background: #374151;
+    }}
+    .copy-code:focus-visible {{
+      outline: 2px solid #93c5fd;
+      outline-offset: 2px;
     }}
     .content pre code {{
       background: transparent;
@@ -1117,6 +1214,57 @@ def open_note(file: str, exp: int = 0, sig: str = ""):
     <p class="path">{escaped_file}</p>
     <article class="content">{rendered_content}</article>
   </main>
+  <script>
+    (() => {{
+      const copyText = async (text) => {{
+        if (navigator.clipboard && window.isSecureContext) {{
+          await navigator.clipboard.writeText(text);
+          return;
+        }}
+        const textarea = document.createElement("textarea");
+        textarea.value = text;
+        textarea.setAttribute("readonly", "");
+        textarea.style.position = "fixed";
+        textarea.style.top = "-1000px";
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand("copy");
+        textarea.remove();
+      }};
+
+      document.querySelectorAll(".content pre").forEach((pre) => {{
+        if (pre.parentElement && pre.parentElement.classList.contains("code-block")) {{
+          return;
+        }}
+        const wrapper = document.createElement("div");
+        wrapper.className = "code-block";
+        pre.parentNode.insertBefore(wrapper, pre);
+        wrapper.appendChild(pre);
+
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "copy-code";
+        button.textContent = "複製";
+        button.setAttribute("aria-label", "複製程式碼");
+        wrapper.appendChild(button);
+
+        button.addEventListener("click", async () => {{
+          const code = pre.querySelector("code");
+          const text = code ? code.innerText : pre.innerText;
+          const original = button.textContent;
+          try {{
+            await copyText(text.replace(/\\n$/, ""));
+            button.textContent = "已複製";
+          }} catch (error) {{
+            button.textContent = "複製失敗";
+          }}
+          window.setTimeout(() => {{
+            button.textContent = original;
+          }}, 1400);
+        }});
+      }});
+    }})();
+  </script>
 </body>
 </html>"""
     )
@@ -1213,7 +1361,7 @@ def run_agent_and_push(user_id: str, prompt: str):
     start = time.time()
     log_debug(f"[AGENT START] user={user_id} backend={AGENT_BACKEND} prompt={prompt[:80]!r}")
     try:
-        answer = ask_agent(prompt)
+        answer = ask_agent(prompt, allow_write=False)
         log_debug(f"[AGENT DONE] user={user_id} elapsed={time.time() - start:.1f}s answer_len={len(answer or '')}")
         response = push_message(user_id, answer or "查詢完成，但沒有產生內容。")
         if response.status_code < 400:
@@ -1235,7 +1383,7 @@ def run_agent_to_page(user_id: str, prompt: str, page_path: str):
     start = time.time()
     log_debug(f"[AGENT PAGE START] user={user_id} backend={AGENT_BACKEND} page={page_path} prompt={prompt[:80]!r}")
     try:
-        answer = ask_agent(prompt)
+        answer = ask_agent(prompt, allow_write=False)
         log_debug(f"[AGENT PAGE DONE] user={user_id} elapsed={time.time() - start:.1f}s answer_len={len(answer or '')}")
         write_answer_page(page_path, "query", prompt, "完成", answer or "查詢完成，但沒有產生內容。")
     except Exception as e:
@@ -1252,7 +1400,7 @@ def run_report_and_push(user_id: str, report_text: str):
             "請沿用目前 vault 既有寫入規則與品質標準處理。\n\n"
             f"{report_text}"
         )
-        answer = ask_agent(prompt)
+        answer = ask_agent(prompt, allow_write=True)
         log_debug(f"[REPORT DONE] user={user_id} elapsed={time.time() - start:.1f}s answer_len={len(answer or '')}")
         response = push_message(user_id, format_report_result(answer or "整理完成，但沒有產生內容。"))
         if response.status_code < 400:
@@ -1279,7 +1427,7 @@ def run_report_to_page(user_id: str, report_text: str, page_path: str):
             "請沿用目前 vault 既有寫入規則與品質標準處理。\n\n"
             f"{report_text}"
         )
-        answer = ask_agent(prompt)
+        answer = ask_agent(prompt, allow_write=True)
         log_debug(f"[REPORT PAGE DONE] user={user_id} elapsed={time.time() - start:.1f}s answer_len={len(answer or '')}")
         write_answer_page(page_path, "report", report_text, "完成", format_report_result(answer or "整理完成，但沒有產生內容。"))
     except Exception as e:
@@ -1455,11 +1603,25 @@ async def webhook(request: Request):
             ).start()
             continue
 
-        page_path = make_answer_page("query", user_text)
-        reply_messages(reply_token, [build_answer_page_message(page_path, user_text, "query")])
+        input_mode, normalized_text = parse_input_mode(user_text)
+        if not normalized_text:
+            reply_message(reply_token, "請在模式後輸入內容。")
+            continue
+        if input_mode == "report":
+            page_path = make_answer_page("report", normalized_text)
+            reply_messages(reply_token, [build_answer_page_message(page_path, normalized_text, "report")])
+            threading.Thread(
+                target=run_report_to_page,
+                args=(user_id, normalized_text, page_path),
+                daemon=True,
+            ).start()
+            continue
+
+        page_path = make_answer_page("query", normalized_text)
+        reply_messages(reply_token, [build_answer_page_message(page_path, normalized_text, "query")])
         threading.Thread(
             target=run_agent_to_page,
-            args=(user_id, user_text, page_path),
+            args=(user_id, normalized_text, page_path),
             daemon=True,
         ).start()
 

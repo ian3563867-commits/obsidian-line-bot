@@ -22,9 +22,9 @@ def _build_cmd() -> list[str]:
     return [codex_exe, *_split_args(codex_args)]
 
 
-def ask_codex(prompt: str) -> str:
+def ask_codex(prompt: str, allow_write: bool = False) -> str:
     try:
-        full_prompt = build_vault_prompt(prompt)
+        full_prompt = build_vault_prompt(prompt, allow_write=allow_write)
         timeout = int(os.environ.get("CODEX_TIMEOUT_SECONDS", "180"))
         result = subprocess.run(
             _build_cmd(),

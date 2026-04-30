@@ -14,6 +14,7 @@ import main
 
 
 CALLS = []
+AGENT_CALLS = []
 
 
 def fake_post(url, headers=None, json=None, **kwargs):
@@ -25,7 +26,8 @@ def fake_post(url, headers=None, json=None, **kwargs):
     return Resp()
 
 
-def fake_ask_agent(prompt):
+def fake_ask_agent(prompt, allow_write=False):
+    AGENT_CALLS.append({"prompt": prompt, "allow_write": allow_write})
     if "問題回報內容" in prompt:
         return "已存到 00_Inbox/20260424-SampleProjectD問題回報.md"
     return f"AGENT:{prompt[:40]}"
@@ -53,6 +55,15 @@ def wait_for_text_prefix(prefix, timeout=2):
     end = time.time() + timeout
     while time.time() < end:
         if any(text.startswith(prefix) for text in text_messages()):
+            return True
+        time.sleep(0.01)
+    return False
+
+
+def wait_for_agent_call_count(count, timeout=2):
+    end = time.time() + timeout
+    while time.time() < end:
+        if len(AGENT_CALLS) >= count:
             return True
         time.sleep(0.01)
     return False
@@ -97,6 +108,7 @@ def run():
     main.ask_agent = fake_ask_agent
     main.USER_MODES.clear()
     main.ALLOWED_USER_IDS = set()
+    AGENT_CALLS.clear()
 
     temp_vault = tempfile.TemporaryDirectory()
     old_vault_dir = main.VAULT_DIR
@@ -105,6 +117,7 @@ def run():
     old_obsidian_vault_name = main.OBSIDIAN_VAULT_NAME
     old_open_note_token = main.OPEN_NOTE_TOKEN
     old_open_note_ttl_seconds = main.OPEN_NOTE_TTL_SECONDS
+    old_open_note_result_ttl_seconds = main.OPEN_NOTE_RESULT_TTL_SECONDS
     old_answer_pages_dir = main.ANSWER_PAGES_DIR
     old_app_assets_dir = main.APP_ASSETS_DIR
     old_mind_palace_icon_path = main.MIND_PALACE_ICON_PATH
@@ -115,6 +128,7 @@ def run():
     main.OBSIDIAN_VAULT_NAME = "my-vault-test"
     main.OPEN_NOTE_TOKEN = "secret-token"
     main.OPEN_NOTE_TTL_SECONDS = 1800
+    main.OPEN_NOTE_RESULT_TTL_SECONDS = 0
     main.APP_ASSETS_DIR = os.path.join(temp_vault.name, "assets")
     main.MIND_PALACE_ICON_PATH = os.path.join(main.APP_ASSETS_DIR, "mind-palace-icon.png")
     os.makedirs(main.APP_ASSETS_DIR, exist_ok=True)
@@ -263,6 +277,33 @@ def run():
         client,
         {
             "type": "message",
+            "replyToken": "r2-direct-query",
+            "source": {"userId": "test-user"},
+            "message": {"type": "text", "text": "SampleProjectD現場入庫異常"},
+        },
+    )
+    assert CALLS[-1]["json"]["messages"][0]["altText"] == "Vault 查詢"
+    assert wait_for_agent_call_count(1)
+    assert AGENT_CALLS[-1] == {"prompt": "SampleProjectD現場入庫異常", "allow_write": False}
+
+    send_event(
+        client,
+        {
+            "type": "message",
+            "replyToken": "r2-direct-report",
+            "source": {"userId": "test-user"},
+            "message": {"type": "text", "text": "紀錄：SampleProjectD現場入庫異常"},
+        },
+    )
+    assert CALLS[-1]["json"]["messages"][0]["altText"] == "Vault 回報"
+    assert wait_for_agent_call_count(2)
+    assert AGENT_CALLS[-1]["prompt"].endswith("SampleProjectD現場入庫異常")
+    assert AGENT_CALLS[-1]["allow_write"] is True
+
+    send_event(
+        client,
+        {
+            "type": "message",
             "replyToken": "r2b",
             "source": {"userId": "test-user"},
             "message": {"type": "text", "text": "回報問題"},
@@ -366,6 +407,26 @@ def run():
         params={"file": expired_file, "exp": expired_exp, "sig": main.sign_open_note(expired_file, expired_exp)},
     )
     assert expired_response.status_code == 403
+    result_page_path = os.path.join(main.ANSWER_PAGES_DIR, "20260424-120000-query-12345.md")
+    os.makedirs(os.path.dirname(result_page_path), exist_ok=True)
+    with open(result_page_path, "w", encoding="utf-8") as f:
+        f.write("# result page\n\n{\n  \"EventID\": \"TEST\"\n}\n")
+    non_expiring_url = main.build_note_open_url(result_page_path)
+    assert "exp=0" in non_expiring_url
+    non_result_url = main.build_note_open_url(os.path.join(main.VAULT_DIR, signed_file))
+    assert "exp=0" not in non_result_url
+    non_expiring_response = client.get(
+        "/open-note",
+        params={
+            "file": os.path.relpath(result_page_path, main.VAULT_DIR).replace("\\", "/"),
+            "exp": 0,
+            "sig": main.sign_open_note(os.path.relpath(result_page_path, main.VAULT_DIR).replace("\\", "/"), 0),
+        },
+    )
+    assert non_expiring_response.status_code == 200
+    assert "<pre><code" in non_expiring_response.text
+    assert "copy-code" in non_expiring_response.text
+    assert "navigator.clipboard" in non_expiring_response.text
 
     send_event(
         client,
@@ -462,6 +523,7 @@ def run():
     main.OBSIDIAN_VAULT_NAME = old_obsidian_vault_name
     main.OPEN_NOTE_TOKEN = old_open_note_token
     main.OPEN_NOTE_TTL_SECONDS = old_open_note_ttl_seconds
+    main.OPEN_NOTE_RESULT_TTL_SECONDS = old_open_note_result_ttl_seconds
     main.ANSWER_PAGES_DIR = old_answer_pages_dir
     main.APP_ASSETS_DIR = old_app_assets_dir
     main.MIND_PALACE_ICON_PATH = old_mind_palace_icon_path
