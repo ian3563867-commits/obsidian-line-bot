@@ -15,6 +15,7 @@ import main
 
 CALLS = []
 AGENT_CALLS = []
+SLOW_CONTEXT_AGENT = False
 
 
 def fake_post(url, headers=None, json=None, **kwargs):
@@ -28,6 +29,8 @@ def fake_post(url, headers=None, json=None, **kwargs):
 
 def fake_ask_agent(prompt, allow_write=False):
     AGENT_CALLS.append({"prompt": prompt, "allow_write": allow_write})
+    if SLOW_CONTEXT_AGENT and "建立第一輪討論背景包" in prompt:
+        time.sleep(0.2)
     if "問題回報內容" in prompt:
         return "已存到 00_Inbox/20260424-SampleProjectD問題回報.md"
     return f"AGENT:{prompt[:40]}"
@@ -85,6 +88,19 @@ def wait_for_file_contains(root, pattern, timeout=2):
     return False
 
 
+def wait_for_discussion_status(client, discussion_id, status, timeout=2):
+    end = time.time() + timeout
+    last_payload = None
+    while time.time() < end:
+        response = client.get(f"/api/discussions/{discussion_id}")
+        if response.status_code == 200:
+            last_payload = response.json()
+            if last_payload.get("status") == status:
+                return last_payload
+        time.sleep(0.01)
+    return last_payload
+
+
 def sign(payload):
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     digest = hmac.new(main.CHANNEL_SECRET.encode(), body, hashlib.sha256).digest()
@@ -104,6 +120,7 @@ def send_event(client, event):
 
 
 def run():
+    global SLOW_CONTEXT_AGENT
     main.requests.post = fake_post
     main.ask_agent = fake_ask_agent
     main.USER_MODES.clear()
@@ -119,6 +136,7 @@ def run():
     old_open_note_ttl_seconds = main.OPEN_NOTE_TTL_SECONDS
     old_open_note_result_ttl_seconds = main.OPEN_NOTE_RESULT_TTL_SECONDS
     old_answer_pages_dir = main.ANSWER_PAGES_DIR
+    old_discussions_dir = main.DISCUSSIONS_DIR
     old_app_assets_dir = main.APP_ASSETS_DIR
     old_mind_palace_icon_path = main.MIND_PALACE_ICON_PATH
     main.VAULT_DIR = temp_vault.name
@@ -130,6 +148,7 @@ def run():
     main.OPEN_NOTE_TTL_SECONDS = 1800
     main.OPEN_NOTE_RESULT_TTL_SECONDS = 0
     main.APP_ASSETS_DIR = os.path.join(temp_vault.name, "assets")
+    main.DISCUSSIONS_DIR = os.path.join(temp_vault.name, "02_Projects", "9002-VaultLINEBot", "WebDiscussionSessions")
     main.MIND_PALACE_ICON_PATH = os.path.join(main.APP_ASSETS_DIR, "mind-palace-icon.png")
     os.makedirs(main.APP_ASSETS_DIR, exist_ok=True)
     with open(main.MIND_PALACE_ICON_PATH, "wb") as f:
@@ -182,6 +201,53 @@ def run():
     )
 
     client = TestClient(main.app)
+
+    discussions_home = client.get("/discussions")
+    assert discussions_home.status_code == 200
+    assert "Web Discussion Session" in discussions_home.text
+    SLOW_CONTEXT_AGENT = True
+    create_response = client.post(
+        "/api/discussions",
+        json={
+            "title": "Pilot 與 Ray 窗口風險",
+            "initial_input": "Pilot 把第一線窗口交給 Ray，這樣是否有風險？",
+        },
+    )
+    assert create_response.status_code == 200
+    discussion_id = create_response.json()["discussion_id"]
+    queued_response = client.post(
+        f"/api/discussions/{discussion_id}/messages",
+        json={"content": "背景包還沒好時，我先補一個問題。"},
+    )
+    assert queued_response.status_code == 200
+    assert queued_response.json()["queued"] is True
+    assert wait_for_agent_call_count(2)
+    SLOW_CONTEXT_AGENT = False
+    discussion = wait_for_discussion_status(client, discussion_id, "active")
+    assert discussion is not None
+    assert discussion["title"] == "Pilot 與 Ray 窗口風險"
+    assert discussion["status"] == "active"
+    assert "AGENT:" in discussion["vault_context_summary"]
+    assert len(discussion["messages"]) == 4
+    assert discussion["messages"][1]["content"] == "背景包還沒好時，我先補一個問題。"
+    assert discussion.get("pending_user_messages") == []
+    discussion_page = client.get(f"/discussions/{discussion_id}")
+    assert discussion_page.status_code == 200
+    assert "Pilot 與 Ray 窗口風險" in discussion_page.text
+    reply_response = client.post(
+        f"/api/discussions/{discussion_id}/messages",
+        json={"content": "那我該怎麼跟 Martin 說？"},
+    )
+    assert reply_response.status_code == 200
+    assert wait_for_agent_call_count(3)
+    discussion = wait_for_discussion_status(client, discussion_id, "active")
+    assert discussion is not None
+    assert discussion["status"] == "active"
+    assert discussion["messages"][-2]["content"] == "那我該怎麼跟 Martin 說？"
+    assert discussion["messages"][-1]["role"] == "assistant"
+    assert "第一輪 vault 背景包" in AGENT_CALLS[-1]["prompt"]
+    assert AGENT_CALLS[-1]["allow_write"] is False
+    AGENT_CALLS.clear()
 
     send_event(
         client,
@@ -525,6 +591,7 @@ def run():
     main.OPEN_NOTE_TTL_SECONDS = old_open_note_ttl_seconds
     main.OPEN_NOTE_RESULT_TTL_SECONDS = old_open_note_result_ttl_seconds
     main.ANSWER_PAGES_DIR = old_answer_pages_dir
+    main.DISCUSSIONS_DIR = old_discussions_dir
     main.APP_ASSETS_DIR = old_app_assets_dir
     main.MIND_PALACE_ICON_PATH = old_mind_palace_icon_path
     temp_vault.cleanup()

@@ -8,6 +8,7 @@ import html
 import time
 import traceback
 import json
+import uuid
 from datetime import datetime
 from urllib.parse import parse_qs, quote, urlencode
 
@@ -39,11 +40,16 @@ ANSWER_PAGES_DIR = os.environ.get(
     "ANSWER_PAGES_DIR",
     os.path.join(VAULT_DIR, "02_Projects", "9002-VaultLINEBot", "LineBotResults"),
 )
+DISCUSSIONS_DIR = os.environ.get(
+    "DISCUSSIONS_DIR",
+    os.path.join(VAULT_DIR, "02_Projects", "9002-VaultLINEBot", "WebDiscussionSessions"),
+)
 KNOWLEDGE_ITEMS_PER_PAGE = 5
 KNOWLEDGE_NOTES_PER_PAGE = 5
 FAST_PREVIEW_LIMIT = 3
 REPORT_MODE_TIMEOUT_SECONDS = 5 * 60
 USER_MODES: dict[str, dict] = {}
+DISCUSSION_FILE_LOCK = threading.RLock()
 LAST_REQUEST_BASE_URL = ""
 LOG_FILE = os.environ.get("BOT_LOG_FILE", os.path.join(os.path.dirname(__file__), "bot-debug.log"))
 APP_ASSETS_DIR = os.environ.get("APP_ASSETS_DIR", os.path.join(os.path.dirname(__file__), "assets"))
@@ -329,6 +335,194 @@ project: 通用
 """
     with open(path, "w", encoding="utf-8") as f:
         f.write(content)
+
+
+def now_text() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def make_discussion_id() -> str:
+    return datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8]
+
+
+def discussion_path(discussion_id: str) -> str:
+    if not re.fullmatch(r"[0-9]{8}-[0-9]{6}-[0-9a-f]{8}", discussion_id):
+        raise HTTPException(status_code=400, detail="Invalid discussion id")
+    return os.path.join(DISCUSSIONS_DIR, f"{discussion_id}.json")
+
+
+def save_discussion(session: dict):
+    os.makedirs(DISCUSSIONS_DIR, exist_ok=True)
+    path = discussion_path(session["discussion_id"])
+    tmp_path = path + ".tmp"
+    with DISCUSSION_FILE_LOCK:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(session, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, path)
+
+
+def load_discussion(discussion_id: str) -> dict:
+    path = discussion_path(discussion_id)
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="Discussion not found")
+    with DISCUSSION_FILE_LOCK:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+
+def update_discussion_fields(discussion_id: str, **fields) -> dict:
+    path = discussion_path(discussion_id)
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="Discussion not found")
+    tmp_path = path + ".tmp"
+    with DISCUSSION_FILE_LOCK:
+        with open(path, "r", encoding="utf-8") as f:
+            session = json.load(f)
+        session.update(fields)
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(session, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, path)
+        return session
+
+
+def append_discussion_message(session: dict, role: str, content: str):
+    session.setdefault("messages", []).append(
+        {
+            "role": role,
+            "content": content,
+            "created_at": now_text(),
+        }
+    )
+
+
+def build_discussion_context_prompt(title: str, initial_input: str) -> str:
+    return f"""Web Discussion Session Prototype：請針對以下主題建立第一輪討論背景包。
+
+請先查詢 vault 相關脈絡，再輸出：
+1. 背景摘要
+2. 相關來源路徑
+3. 初步判斷
+4. 後續可追問方向
+
+注意：
+- 這是討論模式，不要寫入 vault。
+- 不要產生正式筆記。
+- 回答請保留可追溯來源。
+
+討論主題：{title}
+
+使用者初始輸入：
+{initial_input}
+"""
+
+
+def build_discussion_reply_prompt(session: dict, user_message: str) -> str:
+    recent_messages = session.get("messages", [])[-8:]
+    recent_text = "\n".join(
+        f"{message.get('role', '')}: {message.get('content', '')}" for message in recent_messages
+    )
+    return f"""Web Discussion Session Prototype：請延續同一個討論 session 回答使用者。
+
+注意：
+- 預設不要重新查整個 vault。
+- 只根據背景包、session 摘要與最近對話回答。
+- 若使用者明確問到新人物、新專案、新期間或要求查資料，才補查 vault。
+- 不要寫入 vault。
+
+討論主題：{session.get('title', '')}
+
+第一輪 vault 背景包：
+{session.get('vault_context_summary', '')}
+
+目前 session 摘要：
+{session.get('session_summary', '')}
+
+最近對話：
+{recent_text}
+
+使用者最新追問：
+{user_message}
+"""
+
+
+def refresh_session_summary(session: dict):
+    messages = session.get("messages", [])[-6:]
+    summary_lines = []
+    for message in messages:
+        role = "使用者" if message.get("role") == "user" else "AI"
+        content = message.get("content", "").strip().replace("\n", " ")
+        summary_lines.append(f"{role}: {content[:240]}")
+    session["session_summary"] = "\n".join(summary_lines)
+
+
+def process_pending_discussion_messages(discussion_id: str):
+    while True:
+        session = load_discussion(discussion_id)
+        pending_messages = session.get("pending_user_messages", [])
+        if not pending_messages:
+            session["status"] = "active"
+            session["updated_at"] = now_text()
+            save_discussion(session)
+            return
+
+        user_message = pending_messages.pop(0)
+        session["pending_user_messages"] = pending_messages
+        session["status"] = "replying"
+        session["updated_at"] = now_text()
+        save_discussion(session)
+
+        prompt = build_discussion_reply_prompt(session, user_message)
+        answer = ask_agent(prompt, allow_write=False)
+
+        session = load_discussion(discussion_id)
+        append_discussion_message(session, "assistant", answer or "討論完成，但沒有產生內容。")
+        refresh_session_summary(session)
+        session["updated_at"] = now_text()
+        save_discussion(session)
+
+
+def run_discussion_context(discussion_id: str):
+    try:
+        session = update_discussion_fields(discussion_id, status="building_context", updated_at=now_text())
+        prompt = build_discussion_context_prompt(session["title"], session["initial_input"])
+        answer = ask_agent(prompt, allow_write=False)
+        session = load_discussion(discussion_id)
+        session["vault_context_summary"] = answer or "背景包建立完成，但沒有產生內容。"
+        append_discussion_message(session, "assistant", session["vault_context_summary"])
+        refresh_session_summary(session)
+        session["status"] = "active" if not session.get("pending_user_messages") else "replying"
+        session["updated_at"] = now_text()
+        save_discussion(session)
+        process_pending_discussion_messages(discussion_id)
+    except Exception as e:
+        log_debug(f"[DISCUSSION CONTEXT ERROR] id={discussion_id} error={e}\n{traceback.format_exc()}")
+        session = load_discussion(discussion_id)
+        session["status"] = "error"
+        session["error"] = str(e)
+        session["updated_at"] = now_text()
+        save_discussion(session)
+
+
+def run_discussion_reply(discussion_id: str, user_message: str):
+    try:
+        session = load_discussion(discussion_id)
+        prompt = build_discussion_reply_prompt(session, user_message)
+        answer = ask_agent(prompt, allow_write=False)
+        session = load_discussion(discussion_id)
+        append_discussion_message(session, "assistant", answer or "討論完成，但沒有產生內容。")
+        refresh_session_summary(session)
+        session["status"] = "active" if not session.get("pending_user_messages") else "replying"
+        session["updated_at"] = now_text()
+        save_discussion(session)
+        process_pending_discussion_messages(discussion_id)
+    except Exception as e:
+        log_debug(f"[DISCUSSION REPLY ERROR] id={discussion_id} error={e}\n{traceback.format_exc()}")
+        session = load_discussion(discussion_id)
+        append_discussion_message(session, "assistant", f"回覆失敗：{e}")
+        session["status"] = "error"
+        session["error"] = str(e)
+        session["updated_at"] = now_text()
+        save_discussion(session)
 
 
 def build_answer_page_message(path: str, prompt: str, kind: str) -> dict:
@@ -1045,6 +1239,421 @@ def build_daily_report_message() -> dict:
         },
         "quickReply": build_home_quick_reply(),
     }
+
+
+@app.get("/discussions", response_class=HTMLResponse)
+def discussions_home():
+    return HTMLResponse(
+        """<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Web Discussion Session</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #172033;
+      background: #f6f8fb;
+    }
+    main {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 28px 18px 48px;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 28px;
+      line-height: 1.25;
+      letter-spacing: 0;
+    }
+    p {
+      margin: 0 0 18px;
+      color: #526070;
+      line-height: 1.65;
+    }
+    label {
+      display: block;
+      margin: 18px 0 8px;
+      font-weight: 700;
+    }
+    input, textarea {
+      box-sizing: border-box;
+      width: 100%;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      padding: 12px;
+      font: inherit;
+      background: #ffffff;
+    }
+    textarea {
+      min-height: 180px;
+      resize: vertical;
+    }
+    button {
+      margin-top: 18px;
+      border: 0;
+      border-radius: 8px;
+      padding: 12px 16px;
+      font: inherit;
+      font-weight: 700;
+      color: #ffffff;
+      background: #1264a3;
+      cursor: pointer;
+    }
+    button:disabled {
+      cursor: wait;
+      background: #94a3b8;
+    }
+    .status {
+      min-height: 24px;
+      margin-top: 14px;
+      color: #475569;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Web Discussion Session</h1>
+    <p>獨立 prototype。先不接 LINE，先驗證多輪討論、背景包與 claude -p 的體感。</p>
+    <form id="discussion-form">
+      <label for="title">討論主題</label>
+      <input id="title" name="title" autocomplete="off" required placeholder="例如：Pilot 把第一線窗口交給 Ray 的風險">
+      <label for="initial_input">初始內容</label>
+      <textarea id="initial_input" name="initial_input" required placeholder="貼上你想討論的事件、背景或問題"></textarea>
+      <button id="submit-button" type="submit">建立討論</button>
+      <div id="status" class="status"></div>
+    </form>
+  </main>
+  <script>
+    const form = document.getElementById("discussion-form");
+    const statusEl = document.getElementById("status");
+    const button = document.getElementById("submit-button");
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      button.disabled = true;
+      statusEl.textContent = "建立中...";
+      const payload = {
+        title: document.getElementById("title").value,
+        initial_input: document.getElementById("initial_input").value
+      };
+      const response = await fetch("/api/discussions", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload)
+      });
+      if (!response.ok) {
+        statusEl.textContent = "建立失敗";
+        button.disabled = false;
+        return;
+      }
+      const data = await response.json();
+      window.location.href = "/discussions/" + data.discussion_id;
+    });
+  </script>
+</body>
+</html>"""
+    )
+
+
+@app.post("/api/discussions")
+async def create_discussion(request: Request):
+    payload = await request.json()
+    title = str(payload.get("title", "")).strip()
+    initial_input = str(payload.get("initial_input", "")).strip()
+    if not title or not initial_input:
+        raise HTTPException(status_code=400, detail="title and initial_input are required")
+    discussion_id = make_discussion_id()
+    session = {
+        "discussion_id": discussion_id,
+        "created_at": now_text(),
+        "updated_at": now_text(),
+        "source": "web-prototype",
+        "user_id": "local",
+        "title": title,
+        "initial_input": initial_input,
+        "vault_context_summary": "",
+        "vault_sources": [],
+        "session_summary": "",
+        "pending_user_messages": [],
+        "messages": [
+            {
+                "role": "user",
+                "content": initial_input,
+                "created_at": now_text(),
+            }
+        ],
+        "status": "queued",
+    }
+    save_discussion(session)
+    threading.Thread(target=run_discussion_context, args=(discussion_id,), daemon=True).start()
+    return {"discussion_id": discussion_id, "status": session["status"]}
+
+
+@app.get("/api/discussions/{discussion_id}")
+def get_discussion(discussion_id: str):
+    return load_discussion(discussion_id)
+
+
+@app.post("/api/discussions/{discussion_id}/messages")
+async def post_discussion_message(discussion_id: str, request: Request):
+    payload = await request.json()
+    content = str(payload.get("content", "")).strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="content is required")
+    session = load_discussion(discussion_id)
+    if session.get("status") in {"building_context", "replying", "queued"}:
+        append_discussion_message(session, "user", content)
+        session.setdefault("pending_user_messages", []).append(content)
+        session["updated_at"] = now_text()
+        save_discussion(session)
+        return {
+            "discussion_id": discussion_id,
+            "status": session.get("status"),
+            "queued": True,
+        }
+    append_discussion_message(session, "user", content)
+    session["status"] = "replying"
+    session["updated_at"] = now_text()
+    save_discussion(session)
+    threading.Thread(target=run_discussion_reply, args=(discussion_id, content), daemon=True).start()
+    return {"discussion_id": discussion_id, "status": "replying", "queued": False}
+
+
+@app.get("/discussions/{discussion_id}", response_class=HTMLResponse)
+def discussion_page(discussion_id: str):
+    session = load_discussion(discussion_id)
+    title = html.escape(session.get("title", "Web Discussion Session"))
+    escaped_id = html.escape(discussion_id)
+    return HTMLResponse(
+        f"""<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{title}</title>
+  <style>
+    body {{
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #172033;
+      background: #f6f8fb;
+    }}
+    main {{
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 22px 14px 44px;
+    }}
+    header {{
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 16px;
+    }}
+    h1 {{
+      margin: 0;
+      font-size: 24px;
+      line-height: 1.3;
+      letter-spacing: 0;
+    }}
+    .meta {{
+      margin-top: 6px;
+      color: #64748b;
+      font-size: 14px;
+    }}
+    .status {{
+      flex: 0 0 auto;
+      border-radius: 999px;
+      padding: 6px 10px;
+      color: #0f3a5b;
+      background: #d9ecff;
+      font-size: 13px;
+      font-weight: 700;
+    }}
+    .layout {{
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 300px;
+      gap: 16px;
+    }}
+    .panel {{
+      border: 1px solid #d7dee8;
+      border-radius: 8px;
+      background: #ffffff;
+    }}
+    .messages {{
+      min-height: 420px;
+      padding: 14px;
+    }}
+    .message {{
+      margin-bottom: 14px;
+      padding: 12px;
+      border-radius: 8px;
+      line-height: 1.65;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }}
+    .user {{
+      background: #e9f5ee;
+    }}
+    .assistant {{
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+    }}
+    .role {{
+      display: block;
+      margin-bottom: 4px;
+      color: #475569;
+      font-size: 13px;
+      font-weight: 700;
+    }}
+    form {{
+      display: grid;
+      gap: 10px;
+      padding: 14px;
+      border-top: 1px solid #d7dee8;
+      background: #ffffff;
+    }}
+    textarea {{
+      box-sizing: border-box;
+      width: 100%;
+      min-height: 96px;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      padding: 12px;
+      font: inherit;
+      resize: vertical;
+    }}
+    button {{
+      justify-self: start;
+      border: 0;
+      border-radius: 8px;
+      padding: 10px 14px;
+      font: inherit;
+      font-weight: 700;
+      color: #ffffff;
+      background: #1264a3;
+      cursor: pointer;
+    }}
+    button:disabled {{
+      cursor: wait;
+      background: #94a3b8;
+    }}
+    aside {{
+      padding: 14px;
+      line-height: 1.6;
+    }}
+    h2 {{
+      margin: 0 0 10px;
+      font-size: 16px;
+      letter-spacing: 0;
+    }}
+    pre {{
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      margin: 0;
+      color: #334155;
+      font-family: inherit;
+      font-size: 14px;
+    }}
+    @media (max-width: 760px) {{
+      header {{
+        display: block;
+      }}
+      .status {{
+        display: inline-block;
+        margin-top: 10px;
+      }}
+      .layout {{
+        grid-template-columns: 1fr;
+      }}
+    }}
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>{title}</h1>
+        <div class="meta">discussion_id: {escaped_id}</div>
+      </div>
+      <div id="status" class="status">loading</div>
+    </header>
+    <div class="layout">
+      <section class="panel">
+        <div id="messages" class="messages"></div>
+        <form id="message-form">
+          <textarea id="content" required placeholder="輸入下一輪追問"></textarea>
+          <button id="send-button" type="submit">送出</button>
+        </form>
+      </section>
+      <aside class="panel">
+        <h2>Session 摘要</h2>
+        <pre id="summary"></pre>
+      </aside>
+    </div>
+  </main>
+  <script>
+    const discussionId = "{escaped_id}";
+    const messagesEl = document.getElementById("messages");
+    const summaryEl = document.getElementById("summary");
+    const statusEl = document.getElementById("status");
+    const form = document.getElementById("message-form");
+    const contentEl = document.getElementById("content");
+    const button = document.getElementById("send-button");
+
+    function escapeHtml(value) {{
+      return value.replace(/[&<>"']/g, (char) => ({{
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#039;"
+      }}[char]));
+    }}
+
+    function render(session) {{
+      statusEl.textContent = session.status;
+      button.disabled = false;
+      messagesEl.innerHTML = session.messages.map((message) => {{
+        const role = message.role === "user" ? "使用者" : "AI";
+        const cls = message.role === "user" ? "user" : "assistant";
+        return `<div class="message ${{cls}}"><span class="role">${{role}} · ${{escapeHtml(message.created_at || "")}}</span>${{escapeHtml(message.content || "")}}</div>`;
+      }}).join("");
+      summaryEl.textContent = session.session_summary || "背景包建立中...";
+    }}
+
+    async function loadSession() {{
+      const response = await fetch("/api/discussions/" + discussionId);
+      if (!response.ok) return;
+      const session = await response.json();
+      render(session);
+    }}
+
+    form.addEventListener("submit", async (event) => {{
+      event.preventDefault();
+      const content = contentEl.value.trim();
+      if (!content) return;
+      button.disabled = true;
+      const response = await fetch("/api/discussions/" + discussionId + "/messages", {{
+        method: "POST",
+        headers: {{"Content-Type": "application/json"}},
+        body: JSON.stringify({{content}})
+      }});
+      if (response.ok) {{
+        contentEl.value = "";
+      }}
+      button.disabled = false;
+      await loadSession();
+    }});
+
+    loadSession();
+    setInterval(loadSession, 2500);
+  </script>
+</body>
+</html>"""
+    )
 
 
 @app.get("/open-note")
