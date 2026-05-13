@@ -54,6 +54,14 @@ LAST_REQUEST_BASE_URL = ""
 LOG_FILE = os.environ.get("BOT_LOG_FILE", os.path.join(os.path.dirname(__file__), "bot-debug.log"))
 APP_ASSETS_DIR = os.environ.get("APP_ASSETS_DIR", os.path.join(os.path.dirname(__file__), "assets"))
 MIND_PALACE_ICON_PATH = os.path.join(APP_ASSETS_DIR, "mind-palace-icon.png")
+CARD_BG = "#F8FAF4"
+CARD_PANEL_BG = "#FFFFFF"
+CARD_INK = "#17211B"
+CARD_MUTED = "#6C7A70"
+CARD_SUBTLE = "#DCE7DD"
+CARD_ACCENT = "#06C755"
+CARD_ACCENT_DARK = "#048F3D"
+CARD_FOOTER_BG = "#F1F7EF"
 
 app = FastAPI()
 
@@ -535,11 +543,13 @@ def build_answer_page_message(path: str, prompt: str, kind: str) -> dict:
         "contents": {
             "type": "bubble",
             "size": "mega",
+            "styles": build_bubble_styles(),
             "body": {
                 "type": "box",
                 "layout": "vertical",
                 "spacing": "md",
                 "paddingAll": "20px",
+                "backgroundColor": CARD_BG,
                 "contents": [
                     build_card_header(title),
                     {
@@ -547,68 +557,38 @@ def build_answer_page_message(path: str, prompt: str, kind: str) -> dict:
                         "text": "結果頁已建立",
                         "size": "xl",
                         "weight": "bold",
-                        "color": "#111827",
+                        "color": CARD_INK,
                         "wrap": True,
                     },
                     {
                         "type": "text",
                         "text": created_at,
                         "size": "xs",
-                        "color": "#6B7280",
+                        "color": CARD_MUTED,
                         "wrap": True,
                     },
                     {
                         "type": "separator",
                         "margin": "lg",
+                        "color": CARD_SUBTLE,
                     },
-                    {
-                        "type": "box",
-                        "layout": "horizontal",
-                        "margin": "md",
-                        "contents": [
-                            {
-                                "type": "text",
-                                "text": prompt_label,
-                                "size": "sm",
-                                "color": "#6B7280",
-                                "flex": 1,
-                            },
-                            {
-                                "type": "text",
-                                "text": shorten_label(prompt, 72),
-                                "size": "sm",
-                                "color": "#111827",
-                                "align": "end",
-                                "wrap": True,
-                                "flex": 2,
-                            },
-                        ],
-                    },
+                    build_info_row(prompt_label, shorten_label(prompt, 72)),
                 ],
             },
-            "footer": {
-                "type": "box",
-                "layout": "vertical",
-                "paddingTop": "0px",
-                "paddingStart": "20px",
-                "paddingEnd": "20px",
-                "paddingBottom": "20px",
-                "contents": [
-                    {
-                        "type": "button",
-                        "style": "primary",
-                        "height": "sm",
-                        "color": "#06C755",
-                        "action": {
-                            "type": "uri",
-                            "label": "開啟",
-                            "uri": build_note_open_url(path),
-                        },
-                    }
-                ],
-            },
+            "footer": build_card_footer(
+                [
+                    build_uri_button("開啟", build_note_open_url(path)),
+                ]
+            ),
         },
         "quickReply": build_home_quick_reply(),
+    }
+
+
+def build_bubble_styles() -> dict:
+    return {
+        "body": {"backgroundColor": CARD_BG},
+        "footer": {"backgroundColor": CARD_FOOTER_BG},
     }
 
 
@@ -616,13 +596,17 @@ def build_card_header(label: str) -> dict:
     return {
         "type": "box",
         "layout": "horizontal",
+        "spacing": "sm",
+        "paddingAll": "10px",
+        "backgroundColor": CARD_PANEL_BG,
+        "cornerRadius": "14px",
         "contents": [
             {
                 "type": "text",
                 "text": label,
                 "size": "sm",
                 "weight": "bold",
-                "color": "#06C755",
+                "color": CARD_ACCENT_DARK,
                 "flex": 1,
             },
             {
@@ -634,6 +618,102 @@ def build_card_header(label: str) -> dict:
             },
         ],
     }
+
+
+def build_info_row(label: str, value: str) -> dict:
+    return {
+        "type": "box",
+        "layout": "horizontal",
+        "margin": "md",
+        "paddingAll": "12px",
+        "backgroundColor": CARD_PANEL_BG,
+        "cornerRadius": "12px",
+        "contents": [
+            {
+                "type": "text",
+                "text": label,
+                "size": "sm",
+                "color": CARD_MUTED,
+                "flex": 1,
+            },
+            {
+                "type": "text",
+                "text": value,
+                "size": "sm",
+                "color": CARD_INK,
+                "align": "end",
+                "wrap": True,
+                "flex": 2,
+            },
+        ],
+    }
+
+
+def build_card_footer(contents: list[dict]) -> dict:
+    return {
+        "type": "box",
+        "layout": "vertical",
+        "spacing": "sm",
+        "paddingTop": "14px",
+        "paddingStart": "20px",
+        "paddingEnd": "20px",
+        "paddingBottom": "20px",
+        "contents": contents,
+    }
+
+
+def build_message_button(label: str, text: str, style: str = "secondary") -> dict:
+    button = {
+        "type": "button",
+        "style": style,
+        "height": "sm",
+        "action": {
+            "type": "message",
+            "label": label,
+            "text": text,
+        },
+    }
+    if style == "primary":
+        button["color"] = CARD_ACCENT
+    return button
+
+
+def build_uri_button(label: str, uri: str, style: str = "primary") -> dict:
+    button = {
+        "type": "button",
+        "style": style,
+        "height": "sm",
+        "action": {
+            "type": "uri",
+            "label": label,
+            "uri": uri,
+        },
+    }
+    if style == "primary":
+        button["color"] = CARD_ACCENT
+    return button
+
+
+def build_postback_button(
+    label: str,
+    data: str,
+    display_text: str,
+    style: str = "primary",
+) -> dict:
+    button = {
+        "type": "button",
+        "style": style,
+        "height": "sm",
+        "action": {
+            "type": "postback",
+            "label": label,
+            "data": data,
+            "displayText": display_text,
+        },
+    }
+    if style == "primary":
+        button["color"] = CARD_ACCENT
+    return button
 
 
 def build_app_asset_url(filename: str) -> str:
@@ -850,61 +930,40 @@ def build_home_menu_message() -> dict:
         "altText": "功能選單",
         "contents": {
             "type": "bubble",
+            "size": "mega",
+            "styles": build_bubble_styles(),
             "body": {
                 "type": "box",
                 "layout": "vertical",
                 "spacing": "md",
+                "paddingAll": "20px",
+                "backgroundColor": CARD_BG,
                 "contents": [
+                    build_card_header("Mind Palace"),
                     {
                         "type": "text",
                         "text": "功能選單",
                         "weight": "bold",
                         "size": "xl",
+                        "color": CARD_INK,
                         "wrap": True,
                     },
                     {
                         "type": "text",
                         "text": "電腦版 LINE 可用下方按鈕操作；手機版也可以繼續使用 Rich Menu。",
                         "size": "sm",
-                        "color": "#666666",
+                        "color": CARD_MUTED,
                         "wrap": True,
                     },
                 ],
             },
-            "footer": {
-                "type": "box",
-                "layout": "vertical",
-                "spacing": "sm",
-                "contents": [
-                    {
-                        "type": "button",
-                        "style": "primary",
-                        "action": {
-                            "type": "message",
-                            "label": "查詢專案",
-                            "text": "查詢專案",
-                        },
-                    },
-                    {
-                        "type": "button",
-                        "style": "secondary",
-                        "action": {
-                            "type": "message",
-                            "label": "回報問題",
-                            "text": "回報問題",
-                        },
-                    },
-                    {
-                        "type": "button",
-                        "style": "secondary",
-                        "action": {
-                            "type": "message",
-                            "label": "Daily Report",
-                            "text": "今日 Daily Report",
-                        },
-                    },
-                ],
-            },
+            "footer": build_card_footer(
+                [
+                    build_message_button("查詢專案", "查詢專案", "primary"),
+                    build_message_button("回報問題", "回報問題"),
+                    build_message_button("Daily Report", "今日 Daily Report"),
+                ]
+            ),
         },
         "quickReply": build_home_quick_reply(),
     }
@@ -941,17 +1000,21 @@ def build_project_list_flex(page: int = 0) -> dict:
             "altText": "Knowledge 清單",
             "contents": {
                 "type": "bubble",
+                "size": "mega",
+                "styles": build_bubble_styles(),
                 "body": {
                     "type": "box",
                     "layout": "vertical",
                     "spacing": "md",
                     "paddingAll": "20px",
+                    "backgroundColor": CARD_BG,
                     "contents": [
                         build_card_header("Knowledge 摘要"),
                         {
                             "type": "text",
                             "text": "目前找不到 Knowledge 資料夾。",
                             "size": "md",
+                            "color": CARD_INK,
                             "margin": "lg",
                             "wrap": True,
                         },
@@ -986,7 +1049,7 @@ def build_project_page_bubble(page_items: list[str], page: int, total_pages: int
             "type": "text",
             "text": f"第 {page + 1} 頁，共 {total_pages} 頁",
             "size": "sm",
-            "color": "#666666",
+            "color": CARD_MUTED,
             "margin": "md",
         },
     ]
@@ -998,36 +1061,37 @@ def build_project_page_bubble(page_items: list[str], page: int, total_pages: int
                 "layout": "vertical",
                 "margin": "lg",
                 "spacing": "sm",
+                "paddingAll": "12px",
+                "backgroundColor": CARD_PANEL_BG,
+                "cornerRadius": "12px",
                 "contents": [
                     {
                         "type": "text",
                         "text": name,
                         "weight": "bold",
+                        "color": CARD_INK,
                         "wrap": True,
                     },
-                    {
-                        "type": "button",
-                        "style": "primary",
-                        "height": "sm",
-                        "action": {
-                            "type": "postback",
-                            "label": "查看摘要",
-                            "data": "action=project_summary&"
-                            + urlencode({"project": name}, quote_via=quote),
-                            "displayText": f"查看知識：{name}",
-                        },
-                    },
+                    build_postback_button(
+                        "查看摘要",
+                        "action=project_summary&"
+                        + urlencode({"project": name}, quote_via=quote),
+                        f"查看知識：{name}",
+                    ),
                 ],
             }
         )
 
     return {
         "type": "bubble",
+        "size": "mega",
+        "styles": build_bubble_styles(),
         "body": {
             "type": "box",
             "layout": "vertical",
             "spacing": "md",
             "paddingAll": "20px",
+            "backgroundColor": CARD_BG,
             "contents": contents,
         },
     }
@@ -1087,13 +1151,14 @@ def build_project_summary_bubble(
             "text": project_name,
             "weight": "bold",
             "size": "lg",
+            "color": CARD_INK,
             "wrap": True,
         },
         {
             "type": "text",
             "text": "最近 Knowledge 筆記",
             "size": "sm",
-            "color": "#666666",
+            "color": CARD_MUTED,
             "margin": "sm",
         },
     ]
@@ -1103,7 +1168,7 @@ def build_project_summary_bubble(
                 "type": "text",
                 "text": f"第 {page + 1} / {total_pages} 頁",
                 "size": "xs",
-                "color": "#999999",
+                "color": CARD_MUTED,
                 "margin": "xs",
             }
         )
@@ -1113,6 +1178,7 @@ def build_project_summary_bubble(
                 "type": "text",
                 "text": "目前沒有 markdown 筆記",
                 "size": "md",
+                "color": CARD_INK,
                 "margin": "lg",
                 "wrap": True,
             }
@@ -1121,24 +1187,20 @@ def build_project_summary_bubble(
         for path in recent_notes:
             title = os.path.splitext(os.path.basename(path))[0]
             contents.append(
-                {
-                    "type": "button",
-                    "style": "secondary",
-                    "height": "sm",
-                    "margin": "md",
-                    "action": {
-                        "type": "uri",
-                        "label": shorten_label(title),
-                        "uri": build_note_open_url(path),
-                    },
-                }
+                build_uri_button(shorten_label(title), build_note_open_url(path), "secondary")
             )
+            contents[-1]["margin"] = "md"
 
     return {
         "type": "bubble",
+        "size": "mega",
+        "styles": build_bubble_styles(),
         "body": {
             "type": "box",
             "layout": "vertical",
+            "spacing": "sm",
+            "paddingAll": "20px",
+            "backgroundColor": CARD_BG,
             "contents": contents,
         },
     }
@@ -1164,11 +1226,14 @@ def build_daily_report_message() -> dict:
         "altText": "Daily Report",
         "contents": {
             "type": "bubble",
+            "size": "mega",
+            "styles": build_bubble_styles(),
             "body": {
                 "type": "box",
                 "layout": "vertical",
                 "spacing": "md",
                 "paddingAll": "20px",
+                "backgroundColor": CARD_BG,
                 "contents": [
                     build_card_header("Daily Report"),
                     {
@@ -1176,66 +1241,29 @@ def build_daily_report_message() -> dict:
                         "text": status_text,
                         "size": "xl",
                         "weight": "bold",
-                        "color": "#111827",
+                        "color": CARD_INK,
                         "wrap": True,
                     },
                     {
                         "type": "text",
                         "text": title,
                         "size": "xs",
-                        "color": "#6B7280",
+                        "color": CARD_MUTED,
                         "wrap": True,
                     },
                     {
                         "type": "separator",
                         "margin": "lg",
+                        "color": CARD_SUBTLE,
                     },
-                    {
-                        "type": "box",
-                        "layout": "horizontal",
-                        "margin": "md",
-                        "contents": [
-                            {
-                                "type": "text",
-                                "text": detail_label,
-                                "size": "sm",
-                                "color": "#6B7280",
-                                "flex": 1,
-                            },
-                            {
-                                "type": "text",
-                                "text": detail_text,
-                                "size": "sm",
-                                "color": "#111827",
-                                "align": "end",
-                                "wrap": True,
-                                "flex": 2,
-                            },
-                        ],
-                    },
+                    build_info_row(detail_label, detail_text),
                 ],
             },
-            "footer": {
-                "type": "box",
-                "layout": "vertical",
-                "paddingTop": "0px",
-                "paddingStart": "20px",
-                "paddingEnd": "20px",
-                "paddingBottom": "20px",
-                "contents": [
-                    {
-                        "type": "button",
-                        "style": "primary",
-                        "height": "sm",
-                        "color": "#06C755",
-                        "action": {
-                            "type": "uri",
-                            "label": "開啟",
-                            "uri": build_note_open_url(target_path),
-                        },
-                    }
-                ],
-            },
+            "footer": build_card_footer(
+                [
+                    build_uri_button("開啟", build_note_open_url(target_path)),
+                ]
+            ),
         },
         "quickReply": build_home_quick_reply(),
     }
@@ -1889,11 +1917,14 @@ def start_report_mode(reply_token: str, user_id: str):
                 "altText": "Vault 回報",
                 "contents": {
                     "type": "bubble",
+                    "size": "mega",
+                    "styles": build_bubble_styles(),
                     "body": {
                         "type": "box",
                         "layout": "vertical",
                         "spacing": "md",
                         "paddingAll": "20px",
+                        "backgroundColor": CARD_BG,
                         "contents": [
                             build_card_header("Vault 回報"),
                             {
@@ -1901,65 +1932,34 @@ def start_report_mode(reply_token: str, user_id: str):
                                 "text": "回報模式已開啟",
                                 "weight": "bold",
                                 "size": "xl",
-                                "color": "#111827",
+                                "color": CARD_INK,
                                 "wrap": True,
                             },
                             {
                                 "type": "text",
                                 "text": "下一則訊息會記錄到 vault",
                                 "size": "xs",
-                                "color": "#6B7280",
+                                "color": CARD_MUTED,
                                 "wrap": True,
                             },
                             {
                                 "type": "separator",
                                 "margin": "lg",
+                                "color": CARD_SUBTLE,
                             },
-                            {
-                                "type": "box",
-                                "layout": "horizontal",
-                                "margin": "md",
-                                "contents": [
-                                    {
-                                        "type": "text",
-                                        "text": "有效時間",
-                                        "size": "sm",
-                                        "color": "#6B7280",
-                                        "flex": 1,
-                                    },
-                                    {
-                                        "type": "text",
-                                        "text": "5 分鐘",
-                                        "size": "sm",
-                                        "color": "#111827",
-                                        "align": "end",
-                                        "flex": 2,
-                                    },
-                                ],
-                            },
+                            build_info_row("有效時間", "5 分鐘"),
                         ],
                     },
-                    "footer": {
-                        "type": "box",
-                        "layout": "vertical",
-                        "paddingTop": "0px",
-                        "paddingStart": "20px",
-                        "paddingEnd": "20px",
-                        "paddingBottom": "20px",
-                        "contents": [
-                            {
-                                "type": "button",
-                                "style": "secondary",
-                                "height": "sm",
-                                "action": {
-                                    "type": "postback",
-                                    "label": "取消回報",
-                                    "data": "action=cancel_report",
-                                    "displayText": "取消回報",
-                                },
-                            },
-                        ],
-                    },
+                    "footer": build_card_footer(
+                        [
+                            build_postback_button(
+                                "取消回報",
+                                "action=cancel_report",
+                                "取消回報",
+                                "secondary",
+                            ),
+                        ]
+                    ),
                 },
             },
         ],
