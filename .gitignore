@@ -3,4 +3,5 @@ __pycache__/
 *.pyc
 tools/
 bot-debug.log
+uvicorn*.log
 assets/*.original.png

@@ -20,6 +20,7 @@ from fastapi.responses import HTMLResponse, Response
 
 from ask_claude import ask_claude
 from ask_codex import ask_codex
+from google_rag import google_rag_enabled, google_rag_fallback_enabled, query_google_rag
 
 load_dotenv()
 
@@ -1970,7 +1971,7 @@ def run_agent_and_push(user_id: str, prompt: str):
     start = time.time()
     log_debug(f"[AGENT START] user={user_id} backend={AGENT_BACKEND} prompt={prompt[:80]!r}")
     try:
-        answer = ask_agent(prompt, allow_write=False)
+        answer = answer_query(prompt)
         log_debug(f"[AGENT DONE] user={user_id} elapsed={time.time() - start:.1f}s answer_len={len(answer or '')}")
         response = push_message(user_id, answer or "查詢完成，但沒有產生內容。")
         if response.status_code < 400:
@@ -1992,12 +1993,30 @@ def run_agent_to_page(user_id: str, prompt: str, page_path: str):
     start = time.time()
     log_debug(f"[AGENT PAGE START] user={user_id} backend={AGENT_BACKEND} page={page_path} prompt={prompt[:80]!r}")
     try:
-        answer = ask_agent(prompt, allow_write=False)
+        answer = answer_query(prompt)
         log_debug(f"[AGENT PAGE DONE] user={user_id} elapsed={time.time() - start:.1f}s answer_len={len(answer or '')}")
         write_answer_page(page_path, "query", prompt, "完成", answer or "查詢完成，但沒有產生內容。")
     except Exception as e:
         log_debug(f"[AGENT PAGE ERROR] user={user_id} elapsed={time.time() - start:.1f}s error={e}\n{traceback.format_exc()}")
         write_answer_page(page_path, "query", prompt, "失敗", f"查詢失敗：{e}")
+
+
+def answer_query(prompt: str) -> str:
+    if not google_rag_enabled():
+        return ask_agent(prompt, allow_write=False)
+    try:
+        start = time.time()
+        result = query_google_rag(prompt)
+        log_debug(
+            f"[GOOGLE RAG OK] elapsed={time.time() - start:.1f}s "
+            f"sources={len(result.sources)} answer_len={len(result.text or '')}"
+        )
+        return result.text
+    except Exception as e:
+        log_debug(f"[GOOGLE RAG ERROR] fallback={google_rag_fallback_enabled()} error={e}\n{traceback.format_exc()}")
+        if google_rag_fallback_enabled():
+            return ask_agent(prompt, allow_write=False)
+        raise
 
 
 def run_report_and_push(user_id: str, report_text: str):

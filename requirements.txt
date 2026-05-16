@@ -4,3 +4,4 @@ python-dotenv
 line-bot-sdk>=3.0.0
 httpx
 markdown
+google-genai
