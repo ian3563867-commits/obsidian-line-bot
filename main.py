@@ -20,6 +20,7 @@ from fastapi.responses import HTMLResponse, Response
 
 from ask_claude import ask_claude
 from ask_codex import ask_codex
+from retrieval import build_index_hint_prompt, build_preloaded_prompt, format_candidate_summary, run_precheck
 
 load_dotenv()
 
@@ -130,6 +131,30 @@ def ask_agent(prompt: str, allow_write: bool = False) -> str:
     if AGENT_BACKEND == "codex":
         return ask_codex(prompt, allow_write=allow_write)
     return f"未知 AGENT_BACKEND={AGENT_BACKEND}，請設定為 claude 或 codex。"
+
+
+def answer_query(prompt: str) -> tuple[str, str]:
+    precheck = run_precheck(prompt, VAULT_DIR)
+    if precheck.hit:
+        log_debug(
+            f"[PRECHECK HIT] prompt={prompt[:80]!r} "
+            f"blocks={len(precheck.source_blocks)} entries={len(precheck.matched_entries)}"
+        )
+        return ask_agent(build_preloaded_prompt(prompt, precheck), allow_write=False), "precheck"
+    if precheck.mode == "candidate_list":
+        log_debug(
+            f"[PRECHECK CANDIDATES] prompt={prompt[:80]!r} "
+            f"entries={len(precheck.matched_entries)} reason={precheck.fallback_reason}"
+        )
+        return format_candidate_summary(precheck), "candidate_list"
+    if precheck.mode == "index_hints":
+        log_debug(
+            f"[PRECHECK HINTS] prompt={prompt[:80]!r} "
+            f"entries={len(precheck.matched_entries)} reason={precheck.fallback_reason}"
+        )
+        return ask_agent(build_index_hint_prompt(prompt, precheck), allow_write=False), "index_hints"
+    log_debug(f"[PRECHECK FALLBACK] prompt={prompt[:80]!r} reason={precheck.fallback_reason}")
+    return ask_agent(prompt, allow_write=False), "fallback"
 
 
 WRITE_PREFIXES = ("紀錄：", "紀錄:", "記錄：", "記錄:", "新增紀錄：", "新增紀錄:", "新增記錄：", "新增記錄:")
@@ -1970,8 +1995,11 @@ def run_agent_and_push(user_id: str, prompt: str):
     start = time.time()
     log_debug(f"[AGENT START] user={user_id} backend={AGENT_BACKEND} prompt={prompt[:80]!r}")
     try:
-        answer = ask_agent(prompt, allow_write=False)
-        log_debug(f"[AGENT DONE] user={user_id} elapsed={time.time() - start:.1f}s answer_len={len(answer or '')}")
+        answer, answer_source = answer_query(prompt)
+        log_debug(
+            f"[AGENT DONE] user={user_id} elapsed={time.time() - start:.1f}s "
+            f"source={answer_source} answer_len={len(answer or '')}"
+        )
         response = push_message(user_id, answer or "查詢完成，但沒有產生內容。")
         if response.status_code < 400:
             log_debug(f"[PUSH DONE] user={user_id} elapsed={time.time() - start:.1f}s")
@@ -1992,8 +2020,11 @@ def run_agent_to_page(user_id: str, prompt: str, page_path: str):
     start = time.time()
     log_debug(f"[AGENT PAGE START] user={user_id} backend={AGENT_BACKEND} page={page_path} prompt={prompt[:80]!r}")
     try:
-        answer = ask_agent(prompt, allow_write=False)
-        log_debug(f"[AGENT PAGE DONE] user={user_id} elapsed={time.time() - start:.1f}s answer_len={len(answer or '')}")
+        answer, answer_source = answer_query(prompt)
+        log_debug(
+            f"[AGENT PAGE DONE] user={user_id} elapsed={time.time() - start:.1f}s "
+            f"source={answer_source} answer_len={len(answer or '')}"
+        )
         write_answer_page(page_path, "query", prompt, "完成", answer or "查詢完成，但沒有產生內容。")
     except Exception as e:
         log_debug(f"[AGENT PAGE ERROR] user={user_id} elapsed={time.time() - start:.1f}s error={e}\n{traceback.format_exc()}")

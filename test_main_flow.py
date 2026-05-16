@@ -164,6 +164,51 @@ def run():
             "| [[0211-SampleProjectD-ASRS/20260409-問題紀錄]] | SampleProjectD ASRS 目前問題彙整 | ASRS, WMS, SampleProjectD |\n"
             "| [[0188-SampleProjectA/20260409-DN單刪除機制]] | SampleProjectA DN單刪除 | WMS, SampleProjectA |\n"
             "| [[生活/20260418-白沙屯媽祖遶境跟香]] | 生活紀錄 | life |\n"
+            "| [[生活/20260423-家庭資產現況]] | 2026-04-23 資產快照：家庭合計 2,098,457 | life, 家庭, 資產, 財務 |\n"
+            "\n"
+            "## 高價值操作原始檔（02_Projects 直接參考）\n"
+            "\n"
+            "| 原始檔案 | 說明 | 標籤 |\n"
+            "| -------- | ---- | ---- |\n"
+            "| [[02_Projects/0182-SampleProjectB/常用SQL]] | SampleProjectB WMS 常用 SQL / Message 入口；含關單、POClose/WOClose | WMS, SQL, Message, SampleProjectB |\n"
+            "| [[02_Projects/0188-SampleProjectA/常用sql]] | SampleProjectA-Site WMS 常用 SQL / Message 入口；含關單 Message、調撥單 UI 不能上架 | WMS, SQL, Message, SampleProjectA |\n"
+        )
+    yuanzhan_sql = os.path.join(temp_vault.name, "02_Projects", "0182-SampleProjectB", "常用SQL.md")
+    jianzhun_sql = os.path.join(temp_vault.name, "02_Projects", "0188-SampleProjectA", "常用sql.md")
+    os.makedirs(os.path.dirname(yuanzhan_sql), exist_ok=True)
+    os.makedirs(os.path.dirname(jianzhun_sql), exist_ok=True)
+    with open(yuanzhan_sql, "w", encoding="utf-8") as f:
+        f.write(
+            "# SampleProjectB常用 SQL 與 Message\n\n"
+            "## 查詢使用方式\n\n"
+            "- `關單`、`POClose`、`WOClose`：優先看「關單 / 過帳異常」。\n\n"
+            "## 完整目錄\n\n"
+            "| 類別 | 段落 | 用途 | 常見查詢詞 |\n"
+            "|---|---|---|---|\n"
+            "| 關單 / 過帳異常 | [[#關單 / 過帳異常\\|關單 / 過帳異常]] | WO 關單、PO 關單 | WOClose、POClose、關單 |\n\n"
+            "## 關單 / 過帳異常\n\n"
+            "```json\n"
+            "{\"EventID\":\"T5F1U22_POClose\"}\n"
+            "```\n"
+        )
+    with open(jianzhun_sql, "w", encoding="utf-8") as f:
+        f.write(
+            "# SampleProjectA-Site常用 SQL 與 Message\n\n"
+            "## 查詢使用方式\n\n"
+            "- `MSG`、`Message`、`Message Test`：都指可貼到 WMS Message Test 的 JSON。\n\n"
+            "## 完整目錄\n\n"
+            "| 類別 | 段落 | 用途 | 常見查詢詞 |\n"
+            "|---|---|---|---|\n"
+            "| Message Test JSON | [[#關單 Message\\|關單 Message]] | WO 關單、PO 關單 | WOClose、POClose、關單、MSG |\n"
+            "| 調撥 / 轉撥 / 移轉 | [[#調撥單 UI 不能上架原因 / 可上架明細\\|調撥單 UI 不能上架原因 / 可上架明細]] | 查可上架明細 | 調撥單UI、不能上架、可上架明細 |\n\n"
+            "## 關單 Message\n\n"
+            "```json\n"
+            "{\"EventID\":\"T5F1U21_WOClose\"}\n"
+            "```\n\n"
+            "## 調撥單 UI 不能上架原因 / 可上架明細\n\n"
+            "```sql\n"
+            "SELECT * FROM WMS_T_ITEM_DEST;\n"
+            "```\n"
         )
     with open(
         os.path.join(main.KNOWLEDGE_DIR, "0102-SampleProjectD", "20260424-SampleProjectD測試.md"),
@@ -171,6 +216,15 @@ def run():
         encoding="utf-8",
     ) as f:
         f.write("---\ntitle: SampleProjectD測試\n---\n# SampleProjectD測試\n\n- 項目一\n")
+    life_folder = os.path.join(main.KNOWLEDGE_DIR, "生活")
+    os.makedirs(life_folder, exist_ok=True)
+    with open(os.path.join(life_folder, "20260423-家庭資產現況.md"), "w", encoding="utf-8") as f:
+        f.write(
+            "# 家庭資產現況\n\n"
+            "- 你：277,311\n"
+            "- 名誼：1,821,146\n"
+            "- 家庭合計：2,098,457\n"
+        )
     with open(
         os.path.join(main.DAILY_DIR, "20260424-daily-report.md"),
         "w",
@@ -201,6 +255,38 @@ def run():
     )
 
     client = TestClient(main.app)
+
+    answer, answer_source = main.answer_query("查詢SampleProjectA關單MSG")
+    assert answer_source == "precheck"
+    assert answer.startswith("AGENT:")
+    assert len(AGENT_CALLS) == 1
+    assert "Python deterministic index pre-check" in AGENT_CALLS[-1]["prompt"]
+    assert "關單 Message" in AGENT_CALLS[-1]["prompt"]
+    assert "T5F1U21_WOClose" in AGENT_CALLS[-1]["prompt"]
+    AGENT_CALLS.clear()
+
+    answer, answer_source = main.answer_query("查詢關單msg")
+    assert answer_source == "candidate_list"
+    assert "多個可能入口" in answer
+    assert "02_Projects/0182-SampleProjectB/常用SQL" in answer
+    assert "02_Projects/0188-SampleProjectA/常用sql" in answer
+    assert AGENT_CALLS == []
+
+    answer, answer_source = main.answer_query("查詢家庭資產")
+    assert answer_source == "precheck"
+    assert answer.startswith("AGENT:")
+    assert "家庭資產現況" in AGENT_CALLS[-1]["prompt"]
+    assert "家庭合計：2,098,457" in AGENT_CALLS[-1]["prompt"]
+    AGENT_CALLS.clear()
+
+    answer, answer_source = main.answer_query("查詢SampleProjectD目前問題")
+    assert answer_source == "index_hints"
+    assert answer.startswith("AGENT:")
+    assert AGENT_CALLS[-1]["allow_write"] is False
+    assert "Index hints" in AGENT_CALLS[-1]["prompt"]
+    assert "0211-SampleProjectD-ASRS/20260409-問題紀錄" in AGENT_CALLS[-1]["prompt"]
+    assert "查詢SampleProjectD目前問題" in AGENT_CALLS[-1]["prompt"]
+    AGENT_CALLS.clear()
 
     discussions_home = client.get("/discussions")
     assert discussions_home.status_code == 200
@@ -350,7 +436,9 @@ def run():
     )
     assert CALLS[-1]["json"]["messages"][0]["altText"] == "Vault 查詢"
     assert wait_for_agent_call_count(1)
-    assert AGENT_CALLS[-1] == {"prompt": "SampleProjectD現場入庫異常", "allow_write": False}
+    assert AGENT_CALLS[-1]["allow_write"] is False
+    assert "Index hints" in AGENT_CALLS[-1]["prompt"]
+    assert "SampleProjectD現場入庫異常" in AGENT_CALLS[-1]["prompt"]
 
     send_event(
         client,
