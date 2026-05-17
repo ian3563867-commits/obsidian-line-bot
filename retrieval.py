@@ -87,7 +87,7 @@ class PrecheckResult:
 
     @property
     def hit(self) -> bool:
-        return self.mode == "preloaded_context" and bool(self.source_blocks)
+        return self.mode in {"candidate_files", "preloaded_context"} and bool(self.source_blocks)
 
 
 def run_precheck(query: str, vault_dir: str, max_blocks: int = 3) -> PrecheckResult:
@@ -188,7 +188,7 @@ def run_precheck(query: str, vault_dir: str, max_blocks: int = 3) -> PrecheckRes
     blocks: list[SourceBlock] = []
     matched_entries: list[dict[str, str]] = []
     for _, entry, path, toc_entry in candidates[:max_blocks]:
-        block = read_source_block(path, toc_entry)
+        block = build_candidate_file_hint(path, toc_entry)
         if block:
             blocks.append(block)
             matched_entries.append(_entry_payload(entry))
@@ -199,7 +199,7 @@ def run_precheck(query: str, vault_dir: str, max_blocks: int = 3) -> PrecheckRes
         return _fallback("matched entry but failed to read source block")
 
     return PrecheckResult(
-        mode="preloaded_context",
+        mode="candidate_files",
         confidence="high",
         matched_entries=matched_entries,
         source_blocks=blocks,
@@ -209,9 +209,11 @@ def run_precheck(query: str, vault_dir: str, max_blocks: int = 3) -> PrecheckRes
 
 def build_preloaded_prompt(original_prompt: str, result: PrecheckResult) -> str:
     parts = [
-        "本次查詢已由 Python deterministic index pre-check 先完成主目錄 / 子目錄定位。",
-        "請優先根據下方已讀出的來源內容回答；不要重新搜尋 vault，除非你判斷來源明顯不足。",
-        "回答需使用繁體中文，保持 LINE 可讀性，並在結尾列出來源檔案路徑與行號。",
+        "本次查詢已由 Python deterministic index pre-check 先完成文件級縮範圍。",
+        "重要邊界：Python 只負責命中候選文件，不負責精準切出答案行號或段落。",
+        "請只在下方候選文件內 Read / 搜尋 / 判斷段落；不要全 vault Grep / Read。",
+        "若候選文件明顯不足，請明確說明需要 fallback，不要自行擴大到其他檔案。",
+        "回答需使用繁體中文，保持 LINE 可讀性，並在結尾列出實際參考來源檔案路徑；行號可列但不可自行猜測。",
         "",
         f"使用者原始問題：{original_prompt}",
         "",
@@ -220,19 +222,24 @@ def build_preloaded_prompt(original_prompt: str, result: PrecheckResult) -> str:
     for entry in result.matched_entries:
         parts.append(f"- {entry['page']}：{entry['summary']}")
     parts.append("")
-    parts.append("已讀來源內容：")
+    parts.append("候選文件（請限定在這些檔案內查詢）：")
     for block in result.source_blocks:
         parts.append("")
-        parts.append(f"--- {block.file}:{block.start_line}-{block.end_line} ---")
-        parts.append(f"命中原因：{block.match_reason}")
-        parts.append(block.content)
+        parts.append(f"- {block.file}")
+        parts.append(f"  命中原因：{block.match_reason}")
+        if block.content:
+            parts.append(f"  提示：{block.content}")
     return "\n".join(parts)
 
 
 def build_index_hint_prompt(original_prompt: str, result: PrecheckResult) -> str:
     parts = [
         "Python 已先讀取 04_Knowledge/index.md，找到以下可能相關的 index hints。",
-        "這些只是候選入口，不是最終答案；請仍依照原本保守三層搜尋規則判斷是否需要 Read / Grep。",
+        "這些只是候選入口，不是最終答案；請先 Read hinted knowledge page。",
+        "若 knowledge page 頂部或來源區塊標示了原始來源檔，且使用者是在查「內容、完整、流程、步驟、SOP、實作、自動化」這類需要細節的問題，必須一併 Read 原始來源檔。",
+        "若 hinted knowledge page 或來源原始檔仍不足，請再依照原本保守三層搜尋規則判斷是否需要 Grep。",
+        "若使用者是在做廣泛主題查詢（例如：所有、全部、相關內容、內容、有哪些、整理），不可只靠 index hints 宣稱「所有」；必須用主題關鍵字在 02_Projects / 04_Knowledge 做精準 Grep 補齊其他脈絡。",
+        "若使用者是在查「自動化內容、架構、經驗、規劃、方案」這類方案 / 經驗整理型問題，答案必須整合原始需求、解法流程、關鍵判斷、限制風險與後續事項；不可只摘錄主題詞附近段落或只列 action 名稱。",
         "若 hints 與問題不符，請忽略 hints 並照原流程查詢。回答結尾仍需列出實際參考來源。",
         "",
         "Index hints：",
@@ -318,36 +325,21 @@ def read_top_toc(path: str) -> list[TocEntry]:
     return entries
 
 
-def read_source_block(path: str, toc_entry: TocEntry | None) -> SourceBlock | None:
-    try:
-        lines = _read_lines(path)
-    except OSError:
+def build_candidate_file_hint(path: str, toc_entry: TocEntry | None) -> SourceBlock | None:
+    if not os.path.isfile(path):
         return None
-
     if toc_entry:
-        heading_line = _find_heading_line(lines, toc_entry.section)
-        if heading_line:
-            start = heading_line
-            end = _find_next_heading_line(lines, heading_line + 1) or len(lines)
-            content_lines = lines[start - 1 : end]
-            reason = f"子目錄命中：{toc_entry.category} / {toc_entry.section}"
-            return SourceBlock(
-                file=_display_path(path),
-                start_line=start,
-                end_line=end,
-                content="\n".join(content_lines).strip(),
-                match_reason=reason,
-            )
-
-    end = min(len(lines), 120)
-    if end == 0:
-        return None
+        reason = f"子目錄命中：{toc_entry.category} / {toc_entry.section}"
+        hint = f"可優先查看段落「{toc_entry.section}」；同義詞 / 常見問法：{toc_entry.terms}"
+    else:
+        reason = "主目錄命中，未定位子目錄段落"
+        hint = "請在此候選文件內自行 Read / 搜尋相關段落，不要只依賴檔名判斷。"
     return SourceBlock(
         file=_display_path(path),
-        start_line=1,
-        end_line=end,
-        content="\n".join(lines[:end]).strip(),
-        match_reason="主目錄命中，未定位子目錄段落",
+        start_line=0,
+        end_line=0,
+        content=hint,
+        match_reason=reason,
     )
 
 
