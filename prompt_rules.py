@@ -31,6 +31,7 @@ def build_vault_prompt(prompt: str, allow_write: bool = False) -> str:
             "【查詢 vault 必須執行的步驟 - 保守三層搜尋實驗版】\n"
             "Step 1: Read 04_Knowledge/index.md 全文，找出與問題相關的知識頁面或高價值原始入口。\n"
             "        若 index 有明確命中，必須 Read 對應的 04_Knowledge 知識頁或 index 指向的原始入口；不要只看 index 摘要就回答。\n"
+            "        若知識頁頂部或來源區塊標示原始來源檔，且使用者是在查「內容、完整、流程、步驟、SOP、實作、自動化」這類細節問題，必須一併 Read 原始來源檔。\n"
             "Step 2: 判斷是否需要 Grep 原始資料。只有以下條件任一成立，才 Grep 搜尋 02_Projects/ 和 00_Inbox/ 資料夾：\n"
             "        • index 無命中或命中不足\n"
             "        • 已讀取的知識頁仍不足以回答問題，缺少原因、解法、日期、決策人、操作步驟或狀態\n"
@@ -39,6 +40,7 @@ def build_vault_prompt(prompt: str, allow_write: bool = False) -> str:
             "        • 使用者問題是在查 MSG、JSON、API、SQL、模板或範例\n"
             "        • index 命中的知識頁超過 14 天未更新，且問題屬於異常、問題追蹤或 open item 類\n"
             "        • 使用者明確要求完整搜尋、原始紀錄或會議紀錄\n"
+            "        • 使用者是在做廣泛主題查詢，例如：所有、全部、相關內容、內容、有哪些、整理；這類問題不可只靠 index hints 就宣稱「所有」\n"
             "        不確定是否足夠時，預設執行 Grep。\n"
             "Step 3: 若 Step 2 有執行 Grep，Read 所有命中的檔案；若 Step 2 未執行，Read Step 1 命中的知識頁或原始入口。\n"
             "Step 4: 整合所有已讀資料後回答，結尾列出所有實際參考來源檔案路徑。\n\n"
@@ -52,6 +54,7 @@ def build_vault_prompt(prompt: str, allow_write: bool = False) -> str:
             "【查詢 vault 必須執行的步驟 - 保守三層搜尋實驗版】\n"
             "Step 1: Read 04_Knowledge/index.md 全文，找出與問題相關的知識頁面或高價值原始入口。\n"
             "        若 index 有明確命中，必須 Read 對應的 04_Knowledge 知識頁或 index 指向的原始入口；不要只看 index 摘要就回答。\n"
+            "        若知識頁頂部或來源區塊標示原始來源檔，且使用者是在查「內容、完整、流程、步驟、SOP、實作、自動化」這類細節問題，必須一併 Read 原始來源檔。\n"
             "Step 2: 判斷是否需要 Grep 原始資料。只有以下條件任一成立，才 Grep 搜尋 02_Projects/ 資料夾（關鍵字從問題中抽取）：\n"
             "        • index 無命中或命中不足\n"
             "        • 已讀取的知識頁仍不足以回答問題，缺少原因、解法、日期、決策人、操作步驟或狀態\n"
@@ -60,11 +63,28 @@ def build_vault_prompt(prompt: str, allow_write: bool = False) -> str:
             "        • 使用者問題是在查 MSG、JSON、API、SQL、模板或範例\n"
             "        • index 命中的知識頁超過 14 天未更新，且問題屬於異常、問題追蹤或 open item 類\n"
             "        • 使用者明確要求完整搜尋、原始紀錄或會議紀錄\n"
+            "        • 使用者是在做廣泛主題查詢，例如：所有、全部、相關內容、內容、有哪些、整理；這類問題不可只靠 index hints 就宣稱「所有」\n"
             "        不確定是否足夠時，預設執行 Grep。\n"
             "Step 3: 若 Step 2 有執行 Grep，Read 所有命中的檔案（包含 04_Knowledge 知識頁、02_Projects 原始紀錄），並跳過 frontmatter tags 含 life 的檔案。\n"
             "        若 Step 2 未執行，Read Step 1 命中的知識頁或原始入口。\n"
             "Step 4: 整合所有已讀資料後回答，結尾列出所有實際參考來源檔案路徑。\n\n"
         )
+
+    precheck_rule = (
+        "【Pre-check 覆寫規則】若使用者問題中明確出現「Python deterministic index pre-check 先完成文件級縮範圍」"
+        "或「候選文件（請限定在這些檔案內查詢）」，代表 Python 已先完成入口判斷。\n"
+        "此時必須優先遵守候選文件限制：只在候選文件內 Read / 搜尋 / 判斷段落，不要因一般三層搜尋規則或 MSG/SQL/API 條款而全 vault Grep。\n"
+        "只有在候選文件明顯不足時，才可在回答中說明需要 fallback；不要自行擴大到其他檔案。\n\n"
+    )
+
+    answer_synthesis_rule = (
+        "【回答整合規則】先判斷使用者是在查哪一類內容，再選擇回答結構。\n"
+        "資料查詢型（人員、電話、地址、參數、欄位、代碼）：直接列資料，不硬補背景。\n"
+        "流程 / SOP 型（怎麼做、流程、步驟、操作方式）：列前置條件、步驟、注意事項、來源。\n"
+        "問題 / 異常型（為什麼、原因、目前狀況、還沒解決）：列現象、原因、處理方式、狀態。\n"
+        "方案 / 經驗整理型（自動化內容、架構、經驗、規劃、方案）：必須保留背景 / 原始需求、解法 / 流程、關鍵判斷、限制 / 風險與後續事項；"
+        "不可只摘錄主題詞附近段落，也不可只列 action 名稱或工具選型摘要。\n\n"
+    )
 
     if allow_write:
         write_rule = (
@@ -89,4 +109,14 @@ def build_vault_prompt(prompt: str, allow_write: bool = False) -> str:
         "例如 ```json、```sql 或 ```text，方便結果頁排版與複製。\n\n"
     )
 
-    return execution_rule + classification_rule + query_steps + write_rule + format_rule + "【使用者問題】\n" + prompt
+    return (
+        execution_rule
+        + classification_rule
+        + precheck_rule
+        + query_steps
+        + answer_synthesis_rule
+        + write_rule
+        + format_rule
+        + "【使用者問題】\n"
+        + prompt
+    )

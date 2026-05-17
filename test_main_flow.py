@@ -261,8 +261,12 @@ def run():
     assert answer.startswith("AGENT:")
     assert len(AGENT_CALLS) == 1
     assert "Python deterministic index pre-check" in AGENT_CALLS[-1]["prompt"]
+    assert "候選文件" in AGENT_CALLS[-1]["prompt"]
+    assert "只在下方候選文件內" in AGENT_CALLS[-1]["prompt"]
+    assert "02_Projects/0188-SampleProjectA/常用sql.md" in AGENT_CALLS[-1]["prompt"]
     assert "關單 Message" in AGENT_CALLS[-1]["prompt"]
-    assert "T5F1U21_WOClose" in AGENT_CALLS[-1]["prompt"]
+    assert "WOClose" in AGENT_CALLS[-1]["prompt"]
+    assert "T5F1U21_WOClose" not in AGENT_CALLS[-1]["prompt"]
     AGENT_CALLS.clear()
 
     answer, answer_source = main.answer_query("查詢關單msg")
@@ -276,7 +280,8 @@ def run():
     assert answer_source == "precheck"
     assert answer.startswith("AGENT:")
     assert "家庭資產現況" in AGENT_CALLS[-1]["prompt"]
-    assert "家庭合計：2,098,457" in AGENT_CALLS[-1]["prompt"]
+    assert "生活/20260423-家庭資產現況.md" in AGENT_CALLS[-1]["prompt"]
+    assert "家庭合計：2,098,457" not in AGENT_CALLS[-1]["prompt"]
     AGENT_CALLS.clear()
 
     answer, answer_source = main.answer_query("查詢SampleProjectD目前問題")
@@ -284,6 +289,9 @@ def run():
     assert answer.startswith("AGENT:")
     assert AGENT_CALLS[-1]["allow_write"] is False
     assert "Index hints" in AGENT_CALLS[-1]["prompt"]
+    assert "必須一併 Read 原始來源檔" in AGENT_CALLS[-1]["prompt"]
+    assert "不可只靠 index hints 宣稱「所有」" in AGENT_CALLS[-1]["prompt"]
+    assert "原始需求、解法流程、關鍵判斷、限制風險與後續事項" in AGENT_CALLS[-1]["prompt"]
     assert "0211-SampleProjectD-ASRS/20260409-問題紀錄" in AGENT_CALLS[-1]["prompt"]
     assert "查詢SampleProjectD目前問題" in AGENT_CALLS[-1]["prompt"]
     AGENT_CALLS.clear()
