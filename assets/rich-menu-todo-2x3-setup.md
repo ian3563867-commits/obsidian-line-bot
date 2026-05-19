@@ -1,8 +1,13 @@
 # LINE OA Manager Rich Menu 設定
 
-圖片：`assets/rich-menu-todo-2x3-800x540.png`
+建議圖片：`assets/rich-menu-todo-2x3-gemini-800x540.png`
 
 尺寸：800 px x 540 px。
+
+備用尺寸：
+
+- `assets/rich-menu-todo-2x3-gemini-1200x810.png`
+- `assets/rich-menu-todo-2x3-gemini-2500x1686.png`
 
 版型：2 排 3 欄。
 
