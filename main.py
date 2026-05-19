@@ -9,7 +9,7 @@ import time
 import traceback
 import json
 import uuid
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from urllib.parse import parse_qs, quote, urlencode
 
 import markdown
@@ -49,8 +49,12 @@ KNOWLEDGE_ITEMS_PER_PAGE = 5
 KNOWLEDGE_NOTES_PER_PAGE = 5
 FAST_PREVIEW_LIMIT = 3
 REPORT_MODE_TIMEOUT_SECONDS = 5 * 60
+TODO_ITEMS_PER_BUBBLE = 5
+TODO_MAX_CAROUSEL_BUBBLES = 12
 USER_MODES: dict[str, dict] = {}
 DISCUSSION_FILE_LOCK = threading.RLock()
+TODO_FILE_LOCK = threading.RLock()
+TODO_TASKS_PATH = os.environ.get("TODO_TASKS_PATH", "").strip()
 LAST_REQUEST_BASE_URL = ""
 LOG_FILE = os.environ.get("BOT_LOG_FILE", os.path.join(os.path.dirname(__file__), "bot-debug.log"))
 APP_ASSETS_DIR = os.environ.get("APP_ASSETS_DIR", os.path.join(os.path.dirname(__file__), "assets"))
@@ -372,6 +376,275 @@ project: 通用
 
 def now_text() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def get_todo_tasks_path() -> str:
+    return TODO_TASKS_PATH or os.path.join(VAULT_DIR, "06_System", "ToDo", "tasks.md")
+
+
+def todo_empty_file_content() -> str:
+    return """---
+title: LINE Bot To-do Tasks
+date: {date}
+tags: [LINEBot, ToDo, System]
+project: 9002-VaultLINEBot
+---
+
+# LINE Bot To-do Tasks
+
+此檔由 LINE Bot To-do 功能維護，請避免手動重排任務區塊。
+""".format(date=datetime.now().strftime("%Y-%m-%d"))
+
+
+def ensure_todo_tasks_file() -> str:
+    path = get_todo_tasks_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    if not os.path.isfile(path):
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(todo_empty_file_content())
+    return path
+
+
+def parse_todo_task_block(task_id: str, block: str) -> dict:
+    task = {
+        "id": task_id,
+        "status": "open",
+        "type": "work",
+        "project": "",
+        "content": "",
+        "owner": "",
+        "due": "",
+        "created_at": "",
+        "updated_at": "",
+        "source": "line_bot",
+        "reports": [],
+    }
+    content_match = re.search(r"### 內容\n(.*?)(?=\n### |\Z)", block, flags=re.S)
+    if content_match:
+        task["content"] = content_match.group(1).strip()
+    reports_match = re.search(r"### 回報紀錄\n(.*?)(?=\n## T\d{8}-\d{3}\b|\Z)", block, flags=re.S)
+    if reports_match:
+        reports = []
+        for line in reports_match.group(1).splitlines():
+            match = re.match(r"-\s+(.+?)：(.+)", line.strip())
+            if match:
+                reports.append({"created_at": match.group(1).strip(), "content": match.group(2).strip()})
+        task["reports"] = reports
+    for line in block.splitlines():
+        match = re.match(r"-\s+([a-z_]+):\s*(.*)", line.strip())
+        if match and match.group(1) in task:
+            task[match.group(1)] = match.group(2).strip()
+    return task
+
+
+def load_todo_tasks() -> list[dict]:
+    path = ensure_todo_tasks_file()
+    with TODO_FILE_LOCK:
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+    tasks = []
+    matches = list(re.finditer(r"^## (T\d{8}-\d{3})\s*$", content, flags=re.M))
+    for index, match in enumerate(matches):
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(content)
+        tasks.append(parse_todo_task_block(match.group(1), content[start:end]))
+    return tasks
+
+
+def serialize_todo_task(task: dict) -> str:
+    reports = task.get("reports") or []
+    report_lines = ["尚無回報紀錄"] if not reports else [
+        f"- {report.get('created_at', '')}：{report.get('content', '')}" for report in reports
+    ]
+    return "\n".join(
+        [
+            f"## {task['id']}",
+            "",
+            f"- status: {task.get('status', 'open')}",
+            f"- type: {task.get('type', 'work')}",
+            f"- project: {task.get('project', '')}",
+            f"- owner: {task.get('owner', '')}",
+            f"- due: {task.get('due', '')}",
+            f"- created_at: {task.get('created_at', '')}",
+            f"- updated_at: {task.get('updated_at', '')}",
+            f"- source: {task.get('source', 'line_bot')}",
+            "",
+            "### 內容",
+            task.get("content", "").strip(),
+            "",
+            "### 回報紀錄",
+            *report_lines,
+            "",
+        ]
+    )
+
+
+def save_todo_tasks(tasks: list[dict]):
+    path = ensure_todo_tasks_file()
+    tmp_path = path + ".tmp"
+    content = todo_empty_file_content().rstrip() + "\n\n"
+    content += "\n".join(serialize_todo_task(task) for task in tasks)
+    with TODO_FILE_LOCK:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.replace(tmp_path, path)
+
+
+def parse_todo_due(text: str) -> str:
+    today = date.today()
+    normalized = text.strip()
+    if "明天" in text:
+        return (today + timedelta(days=1)).isoformat()
+    if "後天" in text:
+        return (today + timedelta(days=2)).isoformat()
+    if "今天" in text or "今日" in text:
+        return today.isoformat()
+    if "本週" in text or "這週" in text or "這禮拜" in text:
+        return (today + timedelta(days=6 - today.weekday())).isoformat()
+    if "下週" in text or "下禮拜" in text:
+        return (today + timedelta(days=13 - today.weekday())).isoformat()
+    if "月底" in text:
+        next_month = today.replace(day=28) + timedelta(days=4)
+        return (next_month - timedelta(days=next_month.day)).isoformat()
+    match = re.search(r"\b(20\d{2}-\d{2}-\d{2})\b", text)
+    if match:
+        return match.group(1)
+    match = re.search(r"\b(20\d{2})[/.](\d{1,2})[/.](\d{1,2})\b", normalized)
+    if match:
+        try:
+            return date(int(match.group(1)), int(match.group(2)), int(match.group(3))).isoformat()
+        except ValueError:
+            return ""
+    match = re.search(r"\b(\d{1,2})[/-](\d{1,2})\b", normalized)
+    if match:
+        month = int(match.group(1))
+        day = int(match.group(2))
+        try:
+            parsed = date(today.year, month, day)
+            if parsed < today:
+                parsed = date(today.year + 1, month, day)
+            return parsed.isoformat()
+        except ValueError:
+            return ""
+    return ""
+
+
+def infer_todo_type(text: str) -> str:
+    life_keywords = ("買", "繳費", "家庭", "家裡", "小孩", "老婆", "運動", "看醫生", "旅行", "保險", "信用卡")
+    return "life" if any(keyword in text for keyword in life_keywords) else "work"
+
+
+def infer_todo_project(text: str) -> str:
+    project_keywords = {
+        "9002-VaultLINEBot": ("LINEBot", "LINE Bot", "line bot", "vault", "mind palace", "To-do", "todo", "待辦"),
+        "0188-SampleProjectA": ("SampleProjectA", "Site1", "SampleCorpA"),
+        "0182-SampleProjectB": ("SampleProjectB", "SampleCorpB", "SampleProjectB WMS"),
+        "SampleProjectD": ("SampleProjectD", "SampleProjectD ASRS"),
+        "WMS": ("WMS", "入庫", "出貨", "調撥", "庫存"),
+        "ASRS": ("ASRS", "自動倉", "高架倉"),
+        "LCS": ("LCS", "輸送線", "PLC"),
+    }
+    for project, keywords in project_keywords.items():
+        if any(keyword in text for keyword in keywords):
+            return project
+    projects_dir = os.path.join(VAULT_DIR, "02_Projects")
+    if os.path.isdir(projects_dir):
+        for name in os.listdir(projects_dir):
+            path = os.path.join(projects_dir, name)
+            if not os.path.isdir(path):
+                continue
+            aliases = {name, re.sub(r"^\d{4}-", "", name)}
+            aliases.update(part for part in re.split(r"[-_ ]+", name) if len(part) >= 2)
+            if any(alias and alias in text for alias in aliases):
+                return name
+    return ""
+
+
+def next_todo_id(tasks: list[dict]) -> str:
+    prefix = "T" + datetime.now().strftime("%Y%m%d")
+    max_seq = 0
+    for task in tasks:
+        task_id = str(task.get("id", ""))
+        match = re.fullmatch(prefix + r"-(\d{3})", task_id)
+        if match:
+            max_seq = max(max_seq, int(match.group(1)))
+    return f"{prefix}-{max_seq + 1:03d}"
+
+
+def create_todo_task(content: str) -> dict:
+    with TODO_FILE_LOCK:
+        tasks = load_todo_tasks()
+        now = now_text()
+        task = {
+            "id": next_todo_id(tasks),
+            "status": "open",
+            "type": infer_todo_type(content),
+            "project": infer_todo_project(content),
+            "content": content.strip(),
+            "owner": "maintainer",
+            "due": parse_todo_due(content),
+            "created_at": now,
+            "updated_at": now,
+            "source": "line_bot",
+            "reports": [],
+        }
+        tasks.append(task)
+        save_todo_tasks(tasks)
+        return task
+
+
+def find_todo_task(task_id: str) -> dict | None:
+    for task in load_todo_tasks():
+        if task.get("id") == task_id:
+            return task
+    return None
+
+
+def update_todo_task_status(task_id: str, status: str) -> dict | None:
+    with TODO_FILE_LOCK:
+        tasks = load_todo_tasks()
+        target = None
+        for task in tasks:
+            if task.get("id") == task_id:
+                task["status"] = status
+                task["updated_at"] = now_text()
+                target = task
+                break
+        if target:
+            save_todo_tasks(tasks)
+        return target
+
+
+def append_todo_report(task_id: str, report_text: str) -> dict | None:
+    with TODO_FILE_LOCK:
+        tasks = load_todo_tasks()
+        target = None
+        for task in tasks:
+            if task.get("id") == task_id:
+                task.setdefault("reports", []).append({"created_at": now_text(), "content": report_text.strip()})
+                task["updated_at"] = now_text()
+                target = task
+                break
+        if target:
+            save_todo_tasks(tasks)
+        return target
+
+
+def sort_todo_tasks(tasks: list[dict]) -> list[dict]:
+    def sort_key(task: dict):
+        due = task.get("due") or "9999-12-31"
+        updated = task.get("updated_at") or ""
+        return due, updated
+
+    return sorted(tasks, key=sort_key)
+
+
+def get_open_todo_tasks(scope: str = "all") -> list[dict]:
+    tasks = [task for task in load_todo_tasks() if task.get("status") == "open"]
+    if scope == "today":
+        today = date.today().isoformat()
+        tasks = [task for task in tasks if task.get("due") and task.get("due") <= today]
+    return sort_todo_tasks(tasks)
 
 
 def make_discussion_id() -> str:
@@ -945,6 +1218,30 @@ def build_home_quick_reply() -> dict:
                     "text": "今日 Daily Report",
                 },
             },
+            {
+                "type": "action",
+                "action": {
+                    "type": "message",
+                    "label": "To-do",
+                    "text": "To-do",
+                },
+            },
+            {
+                "type": "action",
+                "action": {
+                    "type": "message",
+                    "label": "今日待辦",
+                    "text": "今日待辦",
+                },
+            },
+            {
+                "type": "action",
+                "action": {
+                    "type": "message",
+                    "label": "全部待辦",
+                    "text": "全部待辦",
+                },
+            },
         ]
     }
 
@@ -987,6 +1284,9 @@ def build_home_menu_message() -> dict:
                     build_message_button("查詢專案", "查詢專案", "primary"),
                     build_message_button("回報問題", "回報問題"),
                     build_message_button("Daily Report", "今日 Daily Report"),
+                    build_message_button("To-do", "To-do"),
+                    build_message_button("今日待辦", "今日待辦"),
+                    build_message_button("全部待辦", "全部待辦"),
                 ]
             ),
         },
@@ -994,24 +1294,34 @@ def build_home_menu_message() -> dict:
     }
 
 
-def set_user_mode(user_id: str, mode: str):
-    USER_MODES[user_id] = {"mode": mode, "started_at": time.time()}
+def set_user_mode(user_id: str, mode: str, **fields):
+    USER_MODES[user_id] = {"mode": mode, "started_at": time.time(), **fields}
 
 
 def clear_user_mode(user_id: str):
     USER_MODES.pop(user_id, None)
 
 
-def get_user_mode(user_id: str) -> str:
+def get_user_mode_state(user_id: str) -> dict:
     state = USER_MODES.get(user_id)
     if not state:
-        return ""
-    if state.get("mode") == "report":
+        return {}
+    if state.get("mode") in {"report", "todo_create", "todo_report"}:
         started_at = float(state.get("started_at", 0))
         if time.time() - started_at > REPORT_MODE_TIMEOUT_SECONDS:
             clear_user_mode(user_id)
-            return ""
-    return str(state.get("mode", ""))
+            return {}
+    return state
+
+
+def get_user_mode(user_id: str) -> str:
+    return str(get_user_mode_state(user_id).get("mode", ""))
+
+
+def user_mode_timeout_text(expired_mode: str) -> str:
+    if expired_mode in {"todo_create", "todo_report"}:
+        return "待辦操作已超過 5 分鐘自動取消。"
+    return "問題回報模式已超過 5 分鐘自動取消。這次改用一般查詢處理。"
 
 
 def build_project_list_flex(page: int = 0) -> dict:
@@ -1292,6 +1602,284 @@ def build_daily_report_message() -> dict:
         },
         "quickReply": build_home_quick_reply(),
     }
+
+
+def build_todo_status_label(status: str) -> str:
+    labels = {"open": "未完成", "done": "已完成", "deleted": "已刪除"}
+    return labels.get(status, status or "未完成")
+
+
+def build_todo_summary(task: dict) -> str:
+    due = task.get("due") or "無期限"
+    return f"{task.get('id')}｜{due}｜{shorten_label(task.get('content', ''), 48)}"
+
+
+def build_todo_list_bubble(title: str, tasks: list[dict], page: int, total_pages: int, total_count: int) -> dict:
+    contents: list[dict] = [
+        build_card_header(title),
+        {
+            "type": "text",
+            "text": f"第 {page + 1} / {total_pages} 頁，共 {total_count} 筆未完成",
+            "size": "sm",
+            "color": CARD_MUTED,
+            "wrap": True,
+        },
+    ]
+    for task in tasks:
+        contents.append(
+            {
+                "type": "box",
+                "layout": "vertical",
+                "margin": "md",
+                "paddingAll": "12px",
+                "backgroundColor": CARD_PANEL_BG,
+                "cornerRadius": "12px",
+                "contents": [
+                    {
+                        "type": "text",
+                        "text": build_todo_summary(task),
+                        "size": "sm",
+                        "color": CARD_INK,
+                        "wrap": True,
+                    },
+                    build_postback_button(
+                        "查看",
+                        "action=todo_detail&" + urlencode({"task_id": task.get("id", "")}, quote_via=quote),
+                        f"查看待辦 {task.get('id', '')}",
+                        "secondary",
+                    ),
+                ],
+            }
+        )
+
+    return {
+        "type": "bubble",
+        "size": "mega",
+        "styles": build_bubble_styles(),
+        "body": {
+            "type": "box",
+            "layout": "vertical",
+            "spacing": "sm",
+            "paddingAll": "20px",
+            "backgroundColor": CARD_BG,
+            "contents": contents,
+        },
+    }
+
+
+def build_todo_detail_message(task: dict) -> dict:
+    reports = task.get("reports") or []
+    latest_report = "尚無回報"
+    if reports:
+        latest = reports[-1]
+        latest_report = f"{latest.get('created_at', '')}：{latest.get('content', '')}"
+    return {
+        "type": "flex",
+        "altText": f"待辦 {task.get('id')}",
+        "contents": {
+            "type": "bubble",
+            "size": "mega",
+            "styles": build_bubble_styles(),
+            "body": {
+                "type": "box",
+                "layout": "vertical",
+                "spacing": "md",
+                "paddingAll": "20px",
+                "backgroundColor": CARD_BG,
+                "contents": [
+                    build_card_header("To-do"),
+                    {
+                        "type": "text",
+                        "text": task.get("content", ""),
+                        "size": "xl",
+                        "weight": "bold",
+                        "color": CARD_INK,
+                        "wrap": True,
+                    },
+                    {
+                        "type": "text",
+                        "text": task.get("id", ""),
+                        "size": "xs",
+                        "color": CARD_MUTED,
+                        "wrap": True,
+                    },
+                    {"type": "separator", "margin": "lg", "color": CARD_SUBTLE},
+                    build_info_row("狀態", build_todo_status_label(task.get("status", "open"))),
+                    build_info_row("期限", task.get("due") or "無期限"),
+                    build_info_row("專案", task.get("project") or "未指定"),
+                    build_info_row("負責人", task.get("owner") or "未指定"),
+                    build_info_row("最近回報", shorten_label(latest_report, 90)),
+                ],
+            },
+            "footer": build_card_footer(
+                [
+                    build_postback_button(
+                        "回報",
+                        "action=todo_report&" + urlencode({"task_id": task.get("id", "")}, quote_via=quote),
+                        f"回報待辦 {task.get('id', '')}",
+                    ),
+                    build_postback_button(
+                        "完成",
+                        "action=todo_done&" + urlencode({"task_id": task.get("id", "")}, quote_via=quote),
+                        f"完成待辦 {task.get('id', '')}",
+                        "secondary",
+                    ),
+                    build_postback_button(
+                        "刪除",
+                        "action=todo_delete&" + urlencode({"task_id": task.get("id", "")}, quote_via=quote),
+                        f"刪除待辦 {task.get('id', '')}",
+                        "secondary",
+                    ),
+                ]
+            ),
+        },
+        "quickReply": build_home_quick_reply(),
+    }
+
+
+def build_todo_created_message(task: dict) -> dict:
+    message = build_todo_detail_message(task)
+    message["altText"] = f"待辦已建立 {task.get('id')}"
+    message["contents"]["body"]["contents"][0] = build_card_header("To-do 已建立")
+    return message
+
+
+def build_todo_report_mode_message(task: dict) -> dict:
+    return {
+        "type": "flex",
+        "altText": "待辦回報模式",
+        "contents": {
+            "type": "bubble",
+            "size": "mega",
+            "styles": build_bubble_styles(),
+            "body": {
+                "type": "box",
+                "layout": "vertical",
+                "spacing": "md",
+                "paddingAll": "20px",
+                "backgroundColor": CARD_BG,
+                "contents": [
+                    build_card_header("待辦回報"),
+                    {
+                        "type": "text",
+                        "text": "請輸入最新進度",
+                        "size": "xl",
+                        "weight": "bold",
+                        "color": CARD_INK,
+                        "wrap": True,
+                    },
+                    {
+                        "type": "text",
+                        "text": shorten_label(task.get("content", ""), 72),
+                        "size": "sm",
+                        "color": CARD_MUTED,
+                        "wrap": True,
+                    },
+                    {"type": "separator", "margin": "lg", "color": CARD_SUBTLE},
+                    build_info_row("ID", task.get("id", "")),
+                    build_info_row("有效時間", "5 分鐘"),
+                ],
+            },
+            "footer": build_card_footer(
+                [
+                    build_postback_button(
+                        "取消",
+                        "action=cancel_todo",
+                        "取消待辦回報",
+                        "secondary",
+                    ),
+                ]
+            ),
+        },
+        "quickReply": build_home_quick_reply(),
+    }
+
+
+def build_todo_list_message(scope: str = "all") -> dict:
+    tasks = get_open_todo_tasks(scope)
+    title = "今日待辦" if scope == "today" else "全部待辦"
+    if not tasks:
+        empty_text = "今天沒有到期或逾期的待辦。" if scope == "today" else "目前沒有未完成待辦。"
+        return {"type": "text", "text": empty_text, "quickReply": build_home_quick_reply()}
+
+    visible_tasks = tasks[: TODO_ITEMS_PER_BUBBLE * TODO_MAX_CAROUSEL_BUBBLES]
+    total_pages = max((len(visible_tasks) - 1) // TODO_ITEMS_PER_BUBBLE + 1, 1)
+    bubbles = []
+    for page_index in range(total_pages):
+        start = page_index * TODO_ITEMS_PER_BUBBLE
+        page_tasks = visible_tasks[start : start + TODO_ITEMS_PER_BUBBLE]
+        bubbles.append(build_todo_list_bubble(title, page_tasks, page_index, total_pages, len(tasks)))
+    contents = bubbles[0] if len(bubbles) == 1 else {"type": "carousel", "contents": bubbles}
+    return {
+        "type": "flex",
+        "altText": title,
+        "contents": contents,
+        "quickReply": build_home_quick_reply(),
+    }
+
+
+def start_todo_create_mode(reply_token: str, user_id: str):
+    set_user_mode(user_id, "todo_create")
+    reply_messages(
+        reply_token,
+        [
+            {
+                "type": "flex",
+                "altText": "To-do 建立",
+                "contents": {
+                    "type": "bubble",
+                    "size": "mega",
+                    "styles": build_bubble_styles(),
+                    "body": {
+                        "type": "box",
+                        "layout": "vertical",
+                        "spacing": "md",
+                        "paddingAll": "20px",
+                        "backgroundColor": CARD_BG,
+                        "contents": [
+                            build_card_header("To-do"),
+                            {
+                                "type": "text",
+                                "text": "待辦模式已開啟",
+                                "weight": "bold",
+                                "size": "xl",
+                                "color": CARD_INK,
+                                "wrap": True,
+                            },
+                            {
+                                "type": "text",
+                                "text": "下一則訊息會建立待辦",
+                                "size": "xs",
+                                "color": CARD_MUTED,
+                                "wrap": True,
+                            },
+                            {"type": "separator", "margin": "lg", "color": CARD_SUBTLE},
+                            build_info_row("有效時間", "5 分鐘"),
+                        ],
+                    },
+                    "footer": build_card_footer(
+                        [
+                            build_postback_button(
+                                "取消",
+                                "action=cancel_todo",
+                                "取消待辦",
+                                "secondary",
+                            ),
+                        ]
+                    ),
+                },
+            },
+        ],
+    )
+
+
+def start_todo_report_mode(reply_token: str, user_id: str, task_id: str):
+    task = find_todo_task(task_id)
+    if not task:
+        reply_message(reply_token, "找不到這筆待辦，可能已被刪除或檔案已更新。")
+        return
+    set_user_mode(user_id, "todo_report", task_id=task_id)
+    reply_messages(reply_token, [build_todo_report_mode_message(task)])
 
 
 @app.get("/discussions", response_class=HTMLResponse)
@@ -2109,6 +2697,10 @@ def handle_postback(reply_token: str, user_id: str, data: str):
         clear_user_mode(user_id)
         reply_message(reply_token, "已取消問題回報，回到一般查詢模式。")
         return
+    if action == "cancel_todo":
+        clear_user_mode(user_id)
+        reply_message(reply_token, "已取消待辦操作，回到一般查詢模式。")
+        return
     if action == "direct_input":
         clear_user_mode(user_id)
         reply_message(reply_token, "已切換到直接輸入模式，請直接輸入查詢內容。")
@@ -2116,6 +2708,41 @@ def handle_postback(reply_token: str, user_id: str, data: str):
     if action == "daily_report":
         clear_user_mode(user_id)
         reply_messages(reply_token, [build_daily_report_message()])
+        return
+    if action == "todo_list_today":
+        clear_user_mode(user_id)
+        reply_messages(reply_token, [build_todo_list_message("today")])
+        return
+    if action == "todo_list_all":
+        clear_user_mode(user_id)
+        reply_messages(reply_token, [build_todo_list_message("all")])
+        return
+    if action == "todo_detail":
+        clear_user_mode(user_id)
+        task = find_todo_task(params.get("task_id", ""))
+        if not task:
+            reply_message(reply_token, "找不到這筆待辦，可能已被刪除或檔案已更新。")
+            return
+        reply_messages(reply_token, [build_todo_detail_message(task)])
+        return
+    if action == "todo_report":
+        start_todo_report_mode(reply_token, user_id, params.get("task_id", ""))
+        return
+    if action == "todo_done":
+        clear_user_mode(user_id)
+        task = update_todo_task_status(params.get("task_id", ""), "done")
+        if not task:
+            reply_message(reply_token, "找不到這筆待辦，可能已被刪除或檔案已更新。")
+            return
+        reply_messages(reply_token, [build_todo_detail_message(task)])
+        return
+    if action == "todo_delete":
+        clear_user_mode(user_id)
+        task = update_todo_task_status(params.get("task_id", ""), "deleted")
+        if not task:
+            reply_message(reply_token, "找不到這筆待辦，可能已被刪除或檔案已更新。")
+            return
+        reply_messages(reply_token, [build_todo_detail_message(task)])
         return
     if action == "query_projects":
         clear_user_mode(user_id)
@@ -2184,9 +2811,13 @@ async def webhook(request: Request):
             reply_messages(reply_token, [build_home_menu_message()])
             continue
 
-        if user_text in {"取消", "取消回報"}:
+        if user_text in {"取消", "取消回報", "取消待辦"}:
+            current_mode = USER_MODES.get(user_id, {}).get("mode", "")
             clear_user_mode(user_id)
-            reply_message(reply_token, "已取消問題回報，回到一般查詢模式。")
+            if current_mode in {"todo_create", "todo_report"}:
+                reply_message(reply_token, "已取消待辦操作，回到一般查詢模式。")
+            else:
+                reply_message(reply_token, "已取消問題回報，回到一般查詢模式。")
             continue
 
         if user_text == "查詢專案":
@@ -2204,6 +2835,20 @@ async def webhook(request: Request):
             start_report_mode(reply_token, user_id)
             continue
 
+        if user_text.lower() in {"to-do", "todo", "待辦"}:
+            start_todo_create_mode(reply_token, user_id)
+            continue
+
+        if user_text == "今日待辦":
+            clear_user_mode(user_id)
+            reply_messages(reply_token, [build_todo_list_message("today")])
+            continue
+
+        if user_text == "全部待辦":
+            clear_user_mode(user_id)
+            reply_messages(reply_token, [build_todo_list_message("all")])
+            continue
+
         if user_text == "直接輸入":
             clear_user_mode(user_id)
             reply_message(reply_token, "已切換到直接輸入模式，請直接輸入查詢內容。")
@@ -2214,14 +2859,26 @@ async def webhook(request: Request):
             reply_messages(reply_token, [build_daily_report_message()])
             continue
 
+        direct_todo_match = re.match(r"^(待辦[:：]|todo[:：])\s*(.+)$", user_text, flags=re.I)
+        if direct_todo_match:
+            clear_user_mode(user_id)
+            task = create_todo_task(direct_todo_match.group(2).strip())
+            reply_messages(reply_token, [build_todo_created_message(task)])
+            continue
+
+        previous_mode = USER_MODES.get(user_id, {}).get("mode", "")
         had_mode = user_id in USER_MODES
-        mode = get_user_mode(user_id)
+        mode_state = get_user_mode_state(user_id)
+        mode = str(mode_state.get("mode", ""))
         if had_mode and not mode:
+            if previous_mode in {"todo_create", "todo_report"}:
+                reply_message(reply_token, user_mode_timeout_text(previous_mode))
+                continue
             page_path = make_answer_page("query", user_text)
             reply_messages(
                 reply_token,
                 [
-                    {"type": "text", "text": "問題回報模式已超過 5 分鐘自動取消。這次改用一般查詢處理。"},
+                    {"type": "text", "text": user_mode_timeout_text(previous_mode)},
                     build_answer_page_message(page_path, user_text, "query"),
                 ],
             )
@@ -2241,6 +2898,22 @@ async def webhook(request: Request):
                 args=(user_id, user_text, page_path),
                 daemon=True,
             ).start()
+            continue
+
+        if mode == "todo_create":
+            clear_user_mode(user_id)
+            task = create_todo_task(user_text)
+            reply_messages(reply_token, [build_todo_created_message(task)])
+            continue
+
+        if mode == "todo_report":
+            task_id = str(mode_state.get("task_id", ""))
+            clear_user_mode(user_id)
+            task = append_todo_report(task_id, user_text)
+            if not task:
+                reply_message(reply_token, "找不到這筆待辦，可能已被刪除或檔案已更新。")
+                continue
+            reply_messages(reply_token, [build_todo_detail_message(task)])
             continue
 
         input_mode, normalized_text = parse_input_mode(user_text)

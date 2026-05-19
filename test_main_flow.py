@@ -139,6 +139,7 @@ def run():
     old_discussions_dir = main.DISCUSSIONS_DIR
     old_app_assets_dir = main.APP_ASSETS_DIR
     old_mind_palace_icon_path = main.MIND_PALACE_ICON_PATH
+    old_todo_tasks_path = main.TODO_TASKS_PATH
     main.VAULT_DIR = temp_vault.name
     main.KNOWLEDGE_DIR = os.path.join(temp_vault.name, "04_Knowledge")
     main.DAILY_DIR = os.path.join(temp_vault.name, "03_Daily")
@@ -150,6 +151,7 @@ def run():
     main.APP_ASSETS_DIR = os.path.join(temp_vault.name, "assets")
     main.DISCUSSIONS_DIR = os.path.join(temp_vault.name, "02_Projects", "9002-VaultLINEBot", "WebDiscussionSessions")
     main.MIND_PALACE_ICON_PATH = os.path.join(main.APP_ASSETS_DIR, "mind-palace-icon.png")
+    main.TODO_TASKS_PATH = ""
     os.makedirs(main.APP_ASSETS_DIR, exist_ok=True)
     with open(main.MIND_PALACE_ICON_PATH, "wb") as f:
         f.write(b"custom-icon")
@@ -359,11 +361,293 @@ def run():
         "查詢專案",
         "回報問題",
         "Daily Report",
+        "To-do",
+        "今日待辦",
+        "全部待辦",
     ]
     assert [
         item["action"]["label"]
         for item in menu_msg["contents"]["footer"]["contents"]
-    ] == ["查詢專案", "回報問題", "Daily Report"]
+    ] == ["查詢專案", "回報問題", "Daily Report", "To-do", "今日待辦", "全部待辦"]
+
+    todo_guard_start = len(AGENT_CALLS)
+    call_guard_start = len(CALLS)
+    send_event(
+        client,
+        {
+            "type": "message",
+            "replyToken": "todo-start",
+            "source": {"userId": "test-user"},
+            "message": {"type": "text", "text": "To-do"},
+        },
+    )
+    assert main.USER_MODES.get("test-user", {}).get("mode") == "todo_create"
+    todo_start_msg = CALLS[-1]["json"]["messages"][0]
+    assert todo_start_msg["altText"] == "To-do 建立"
+    assert todo_start_msg["contents"]["body"]["contents"][1]["text"] == "待辦模式已開啟"
+
+    send_event(
+        client,
+        {
+            "type": "message",
+            "replyToken": "todo-create",
+            "source": {"userId": "test-user"},
+            "message": {"type": "text", "text": "SampleProjectA小數防呆明天問 Mark"},
+        },
+    )
+    assert "test-user" not in main.USER_MODES
+    todo_path = main.get_todo_tasks_path()
+    with open(todo_path, "r", encoding="utf-8") as f:
+        todo_content = f.read()
+    assert "T" in todo_content
+    assert "SampleProjectA小數防呆明天問 Mark" in todo_content
+    assert "- status: open" in todo_content
+    assert "- due:" in todo_content
+    created_task = main.load_todo_tasks()[0]
+    task_id = created_task["id"]
+    assert created_task["project"] == "0188-SampleProjectA"
+    assert CALLS[-1]["json"]["messages"][0]["altText"].startswith("待辦已建立")
+
+    send_event(
+        client,
+        {
+            "type": "message",
+            "replyToken": "todo-all",
+            "source": {"userId": "test-user"},
+            "message": {"type": "text", "text": "全部待辦"},
+        },
+    )
+    todo_all_msg = CALLS[-1]["json"]["messages"][0]
+    assert todo_all_msg["altText"] == "全部待辦"
+    assert task_id in str(todo_all_msg)
+
+    send_event(
+        client,
+        {
+            "type": "message",
+            "replyToken": "todo-today",
+            "source": {"userId": "test-user"},
+            "message": {"type": "text", "text": "今日待辦"},
+        },
+    )
+    assert "SampleProjectA小數防呆" not in str(CALLS[-1]["json"]["messages"][0])
+
+    send_event(
+        client,
+        {
+            "type": "postback",
+            "replyToken": "todo-detail",
+            "source": {"userId": "test-user"},
+            "postback": {"data": "action=todo_detail&task_id=" + task_id},
+        },
+    )
+    assert CALLS[-1]["json"]["messages"][0]["altText"] == f"待辦 {task_id}"
+
+    send_event(
+        client,
+        {
+            "type": "postback",
+            "replyToken": "todo-report-start",
+            "source": {"userId": "test-user"},
+            "postback": {"data": "action=todo_report&task_id=" + task_id},
+        },
+    )
+    assert main.USER_MODES.get("test-user", {}).get("mode") == "todo_report"
+    assert main.USER_MODES["test-user"]["task_id"] == task_id
+    todo_report_mode_msg = CALLS[-1]["json"]["messages"][0]
+    assert todo_report_mode_msg["type"] == "flex"
+    assert todo_report_mode_msg["altText"] == "待辦回報模式"
+    assert todo_report_mode_msg["contents"]["body"]["contents"][1]["text"] == "請輸入最新進度"
+    assert todo_report_mode_msg["contents"]["footer"]["contents"][0]["action"]["label"] == "取消"
+    assert todo_report_mode_msg["contents"]["footer"]["contents"][0]["action"]["data"] == "action=cancel_todo"
+
+    send_event(
+        client,
+        {
+            "type": "message",
+            "replyToken": "todo-report",
+            "source": {"userId": "test-user"},
+            "message": {"type": "text", "text": "Mark 說下午會看"},
+        },
+    )
+    assert "Mark 說下午會看" in str(CALLS[-1]["json"]["messages"][0])
+    assert "Mark 說下午會看" in main.load_todo_tasks()[0]["reports"][0]["content"]
+
+    send_event(
+        client,
+        {
+            "type": "postback",
+            "replyToken": "todo-done",
+            "source": {"userId": "test-user"},
+            "postback": {"data": "action=todo_done&task_id=" + task_id},
+        },
+    )
+    assert main.find_todo_task(task_id)["status"] == "done"
+    send_event(
+        client,
+        {
+            "type": "message",
+            "replyToken": "todo-all-empty",
+            "source": {"userId": "test-user"},
+            "message": {"type": "text", "text": "全部待辦"},
+        },
+    )
+    assert "目前沒有未完成待辦" in CALLS[-1]["json"]["messages"][0]["text"]
+
+    send_event(
+        client,
+        {
+            "type": "message",
+            "replyToken": "todo-direct-create",
+            "source": {"userId": "test-user"},
+            "message": {"type": "text", "text": "待辦：今天整理 LINE Bot To-do 測試"},
+        },
+    )
+    second_task_id = main.load_todo_tasks()[-1]["id"]
+    send_event(
+        client,
+        {
+            "type": "postback",
+            "replyToken": "todo-delete",
+            "source": {"userId": "test-user"},
+            "postback": {"data": "action=todo_delete&task_id=" + second_task_id},
+        },
+    )
+    assert main.find_todo_task(second_task_id)["status"] == "deleted"
+    with open(todo_path, "r", encoding="utf-8") as f:
+        assert second_task_id in f.read()
+
+    assert main.parse_todo_due("本週整理規格") == (datetime.now().date() + main.timedelta(days=6 - datetime.now().date().weekday())).isoformat()
+    assert main.parse_todo_due("下週提醒 Mark") == (datetime.now().date() + main.timedelta(days=13 - datetime.now().date().weekday())).isoformat()
+    assert main.parse_todo_due("5/30 前確認") != ""
+    assert main.parse_todo_due("2026/06/01 前確認") == "2026-06-01"
+
+    bulk_tasks = main.load_todo_tasks()
+    today = datetime.now().date().isoformat()
+    yesterday = (datetime.now().date() - main.timedelta(days=1)).isoformat()
+    for idx in range(20):
+        bulk_tasks.append(
+            {
+                "id": f"T20990101-{idx + 1:03d}",
+                "status": "open",
+                "type": "work",
+                "project": "9002-VaultLINEBot",
+                "content": f"批次測試待辦 {idx + 1}",
+                "owner": "maintainer",
+                "due": today if idx % 2 == 0 else "",
+                "created_at": f"2099-01-01 00:{idx:02d}:00",
+                "updated_at": f"2099-01-01 00:{idx:02d}:00",
+                "source": "line_bot",
+                "reports": [],
+            }
+        )
+    bulk_tasks.append(
+        {
+            "id": "T20990101-999",
+            "status": "open",
+            "type": "work",
+            "project": "9002-VaultLINEBot",
+            "content": "逾期待辦排序測試",
+            "owner": "maintainer",
+            "due": yesterday,
+            "created_at": "2099-01-01 00:59:00",
+            "updated_at": "2099-01-01 00:59:00",
+            "source": "line_bot",
+            "reports": [],
+        }
+    )
+    main.save_todo_tasks(bulk_tasks)
+
+    send_event(
+        client,
+        {
+            "type": "message",
+            "replyToken": "todo-carousel",
+            "source": {"userId": "test-user"},
+            "message": {"type": "text", "text": "全部待辦"},
+        },
+    )
+    carousel_msg = CALLS[-1]["json"]["messages"][0]
+    assert carousel_msg["contents"]["type"] == "carousel"
+    assert len(carousel_msg["contents"]["contents"]) == 5
+    for bubble in carousel_msg["contents"]["contents"]:
+        task_boxes = [
+            item
+            for item in bubble["body"]["contents"]
+            if item.get("type") == "box" and item.get("layout") == "vertical"
+        ]
+        assert len(task_boxes) <= main.TODO_ITEMS_PER_BUBBLE
+
+    send_event(
+        client,
+        {
+            "type": "message",
+            "replyToken": "todo-today-list",
+            "source": {"userId": "test-user"},
+            "message": {"type": "text", "text": "今日待辦"},
+        },
+    )
+    today_msg = CALLS[-1]["json"]["messages"][0]
+    assert "逾期待辦排序測試" in str(today_msg)
+    assert "批次測試待辦 1" in str(today_msg)
+    assert "批次測試待辦 2" not in str(today_msg)
+
+    send_event(
+        client,
+        {
+            "type": "postback",
+            "replyToken": "todo-missing-detail",
+            "source": {"userId": "test-user"},
+            "postback": {"data": "action=todo_detail&task_id=T19990101-404"},
+        },
+    )
+    assert "找不到這筆待辦" in CALLS[-1]["json"]["messages"][0]["text"]
+
+    send_event(
+        client,
+        {
+            "type": "message",
+            "replyToken": "todo-cancel-start",
+            "source": {"userId": "test-user"},
+            "message": {"type": "text", "text": "To-do"},
+        },
+    )
+    send_event(
+        client,
+        {
+            "type": "message",
+            "replyToken": "todo-cancel",
+            "source": {"userId": "test-user"},
+            "message": {"type": "text", "text": "取消"},
+        },
+    )
+    assert "已取消待辦操作" in CALLS[-1]["json"]["messages"][0]["text"]
+
+    send_event(
+        client,
+        {
+            "type": "message",
+            "replyToken": "todo-timeout-start",
+            "source": {"userId": "test-user"},
+            "message": {"type": "text", "text": "To-do"},
+        },
+    )
+    main.USER_MODES["test-user"]["started_at"] = time.time() - main.REPORT_MODE_TIMEOUT_SECONDS - 1
+    send_event(
+        client,
+        {
+            "type": "message",
+            "replyToken": "todo-timeout",
+            "source": {"userId": "test-user"},
+            "message": {"type": "text", "text": "這筆不應該建立"},
+        },
+    )
+    assert "待辦操作已超過 5 分鐘自動取消" in CALLS[-1]["json"]["messages"][0]["text"]
+    assert "這筆不應該建立" not in open(todo_path, "r", encoding="utf-8").read()
+    todo_calls = CALLS[call_guard_start:]
+    assert len(AGENT_CALLS) == todo_guard_start
+    assert all("/push" not in call["url"] for call in todo_calls)
+    assert not os.path.isdir(main.ANSWER_PAGES_DIR)
 
     send_event(
         client,
@@ -489,6 +773,9 @@ def run():
         "查詢專案",
         "回報問題",
         "Daily Report",
+        "To-do",
+        "今日待辦",
+        "全部待辦",
     ]
 
     send_event(
@@ -690,6 +977,7 @@ def run():
     main.DISCUSSIONS_DIR = old_discussions_dir
     main.APP_ASSETS_DIR = old_app_assets_dir
     main.MIND_PALACE_ICON_PATH = old_mind_palace_icon_path
+    main.TODO_TASKS_PATH = old_todo_tasks_path
     temp_vault.cleanup()
 
 
