@@ -27,6 +27,16 @@ TECHNICAL_QUERY_TERMS = (
     "取消組盤",
 )
 
+GENERIC_PROJECT_TERMS = {
+    "api",
+    "json",
+    "message",
+    "msg",
+    "sql",
+    "sop",
+    "常用sql",
+}
+
 TIME_SENSITIVE_TERMS = (
     "最新",
     "最近",
@@ -164,13 +174,13 @@ def run_precheck(query: str, vault_dir: str, max_blocks: int = 3) -> PrecheckRes
     project_named = bool(project_candidates)
     if project_named:
         candidates = project_candidates
-    elif len(candidates) > 1:
+    elif _is_ambiguous_message_query(query, candidates):
         return PrecheckResult(
             mode="candidate_list",
             confidence="ambiguous",
             matched_entries=[_entry_payload(item[1]) for item in candidates[:max_blocks]],
             source_blocks=[],
-            fallback_reason="multiple high-value candidates and no explicit project",
+            fallback_reason="message query has multiple project candidates and no explicit project",
         )
 
     candidates.sort(key=lambda item: (-item[0], item[1].title))
@@ -395,6 +405,17 @@ def _is_asset_query(query: str) -> bool:
     return any(term in query for term in ASSET_QUERY_TERMS)
 
 
+def _is_ambiguous_message_query(query: str, candidates: list[tuple[int, IndexEntry, str, TocEntry | None]]) -> bool:
+    query_lower = query.lower()
+    if "msg" not in query_lower and "message" not in query_lower:
+        return False
+    project_like = [
+        item for item in candidates
+        if any(term in item[1].tags for term in ("SampleProjectB", "SampleProjectA", "SampleProjectC", "SampleProjectD", "SampleProjectE", "SampleProjectF"))
+    ]
+    return len(project_like) > 1
+
+
 def _asset_entries(entries: list[IndexEntry]) -> list[IndexEntry]:
     result = []
     for entry in entries:
@@ -469,6 +490,9 @@ def _candidate_terms(text: str) -> set[str]:
     for chunk in re.findall(r"[\u4e00-\u9fff]{2,}", text):
         if 2 <= len(chunk) <= 12:
             terms.add(chunk)
+        for size in range(2, min(6, len(chunk)) + 1):
+            for index in range(len(chunk) - size + 1):
+                terms.add(chunk[index:index + size])
         for phrase in re.split(r"[、，,/\s]+", chunk):
             if 2 <= len(phrase) <= 12:
                 terms.add(phrase)
@@ -488,10 +512,11 @@ def _project_terms(entry: IndexEntry) -> set[str]:
     terms = set()
     text = " ".join([entry.page, entry.title, entry.tags])
     for token in re.findall(r"[a-z0-9][a-z0-9_-]*", text.lower()):
-        terms.add(token)
+        if token not in GENERIC_PROJECT_TERMS:
+            terms.add(token)
     for chunk in re.findall(r"[\u4e00-\u9fff]{2,}", text):
         for phrase in re.split(r"[、，,/\s]+", chunk):
-            if 2 <= len(phrase) <= 8:
+            if 2 <= len(phrase) <= 8 and phrase.lower() not in GENERIC_PROJECT_TERMS:
                 terms.add(phrase)
     return terms
 

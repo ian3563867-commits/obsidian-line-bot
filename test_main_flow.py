@@ -167,6 +167,7 @@ def run():
             "| [[0188-SampleProjectA/20260409-DN單刪除機制]] | SampleProjectA DN單刪除 | WMS, SampleProjectA |\n"
             "| [[生活/20260418-白沙屯媽祖遶境跟香]] | 生活紀錄 | life |\n"
             "| [[生活/20260423-家庭資產現況]] | 2026-04-23 資產快照：家庭合計 2,098,457 | life, 家庭, 資產, 財務 |\n"
+            "| [[WMS通用/20260408-WMS常用SQL與API操作]] | 跨專案 WMS 常用 SQL；含 ALERTSYS 通知系統查詢（NS_M_SEND_GROUP、NS_M_USER） | WMS, SQL, API, 通用, ALERTSYS, 通知系統 |\n"
             "\n"
             "## 高價值操作原始檔（02_Projects 直接參考）\n"
             "\n"
@@ -174,11 +175,14 @@ def run():
             "| -------- | ---- | ---- |\n"
             "| [[02_Projects/0182-SampleProjectB/常用SQL]] | SampleProjectB WMS 常用 SQL / Message 入口；含關單、POClose/WOClose | WMS, SQL, Message, SampleProjectB |\n"
             "| [[02_Projects/0188-SampleProjectA/常用sql]] | SampleProjectA-Site WMS 常用 SQL / Message 入口；含關單 Message、調撥單 UI 不能上架 | WMS, SQL, Message, SampleProjectA |\n"
+            "| [[04_Knowledge/WMS通用/20260408-WMS常用SQL與API操作]] | WMS 通用 SQL / API 操作入口；含 ALERTSYS 通知系統查詢（NS_M_SEND_GROUP、NS_M_USER） | WMS, SQL, API, 通用, ALERTSYS, 通知系統 |\n"
         )
     yuanzhan_sql = os.path.join(temp_vault.name, "02_Projects", "0182-SampleProjectB", "常用SQL.md")
     jianzhun_sql = os.path.join(temp_vault.name, "02_Projects", "0188-SampleProjectA", "常用sql.md")
     os.makedirs(os.path.dirname(yuanzhan_sql), exist_ok=True)
     os.makedirs(os.path.dirname(jianzhun_sql), exist_ok=True)
+    wms_common_sql = os.path.join(main.KNOWLEDGE_DIR, "WMS通用", "20260408-WMS常用SQL與API操作.md")
+    os.makedirs(os.path.dirname(wms_common_sql), exist_ok=True)
     with open(yuanzhan_sql, "w", encoding="utf-8") as f:
         f.write(
             "# SampleProjectB常用 SQL 與 Message\n\n"
@@ -210,6 +214,18 @@ def run():
             "## 調撥單 UI 不能上架原因 / 可上架明細\n\n"
             "```sql\n"
             "SELECT * FROM WMS_T_ITEM_DEST;\n"
+            "```\n"
+        )
+    with open(wms_common_sql, "w", encoding="utf-8") as f:
+        f.write(
+            "# WMS 常用 SQL 與 API 操作參考\n\n"
+            "## ALERTSYS 通知系統查詢\n\n"
+            "### 查詢發送群組與使用者列表\n\n"
+            "```sql\n"
+            "SELECT G.SEND_GROUP_NO, G.SEND_GROUP_DESC, STRING_AGG(U.USER_NAME, ', ')\n"
+            "FROM NS_M_SEND_GROUP G\n"
+            "LEFT JOIN NS_M_USER U ON G.SEND_GROUP_NO = U.SEND_GROUP_NO\n"
+            "GROUP BY G.SEND_GROUP_NO, G.SEND_GROUP_DESC;\n"
             "```\n"
         )
     with open(
@@ -277,6 +293,13 @@ def run():
     assert "02_Projects/0182-SampleProjectB/常用SQL" in answer
     assert "02_Projects/0188-SampleProjectA/常用sql" in answer
     assert AGENT_CALLS == []
+
+    answer, answer_source = main.answer_query("查詢通知系統sql，關鍵字還有ALERTSYS")
+    assert answer_source == "precheck"
+    assert answer.startswith("AGENT:")
+    assert "04_Knowledge/WMS通用/20260408-WMS常用SQL與API操作.md" in AGENT_CALLS[-1]["prompt"]
+    assert "NS_M_SEND_GROUP" in AGENT_CALLS[-1]["prompt"]
+    AGENT_CALLS.clear()
 
     answer, answer_source = main.answer_query("查詢家庭資產")
     assert answer_source == "precheck"
@@ -662,7 +685,7 @@ def run():
     assert CALLS[-1]["json"]["messages"][1]["altText"] == "Knowledge 清單"
     knowledge_contents = CALLS[-1]["json"]["messages"][1]["contents"]
     assert knowledge_contents["type"] == "carousel"
-    assert len(knowledge_contents["contents"]) == 4
+    assert len(knowledge_contents["contents"]) == 5
     for bubble in knowledge_contents["contents"]:
         assert bubble["body"]["contents"][0]["contents"][0]["text"] == "Knowledge 摘要"
         assert "/mind-palace-icon.png?v=" in bubble["body"]["contents"][0]["contents"][1]["url"]
