@@ -381,11 +381,8 @@ def run():
     assert menu_msg["type"] == "flex"
     assert menu_msg["altText"] == "功能選單"
     assert [item["action"]["label"] for item in menu_msg["quickReply"]["items"]] == [
-        "查詢專案",
-        "回報問題",
-        "Daily Report",
         "To-do",
-        "今日待辦",
+        "回報問題",
         "全部待辦",
     ]
     assert [
@@ -793,11 +790,8 @@ def run():
     assert wait_for_file_contains(main.ANSWER_PAGES_DIR, "已記錄到 vault")
     assert wait_for_file_contains(main.ANSWER_PAGES_DIR, "00_Inbox\\20260424-SampleProjectD問題回報.md")
     assert [item["action"]["label"] for item in CALLS[-1]["json"]["messages"][0]["quickReply"]["items"]] == [
-        "查詢專案",
-        "回報問題",
-        "Daily Report",
         "To-do",
-        "今日待辦",
+        "回報問題",
         "全部待辦",
     ]
 

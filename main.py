@@ -1198,30 +1198,6 @@ def build_home_quick_reply() -> dict:
                 "type": "action",
                 "action": {
                     "type": "message",
-                    "label": "查詢專案",
-                    "text": "查詢專案",
-                },
-            },
-            {
-                "type": "action",
-                "action": {
-                    "type": "message",
-                    "label": "回報問題",
-                    "text": "回報問題",
-                },
-            },
-            {
-                "type": "action",
-                "action": {
-                    "type": "message",
-                    "label": "Daily Report",
-                    "text": "今日 Daily Report",
-                },
-            },
-            {
-                "type": "action",
-                "action": {
-                    "type": "message",
                     "label": "To-do",
                     "text": "To-do",
                 },
@@ -1230,8 +1206,8 @@ def build_home_quick_reply() -> dict:
                 "type": "action",
                 "action": {
                     "type": "message",
-                    "label": "今日待辦",
-                    "text": "今日待辦",
+                    "label": "回報問題",
+                    "text": "回報問題",
                 },
             },
             {
