@@ -140,6 +140,7 @@ def run():
     old_app_assets_dir = main.APP_ASSETS_DIR
     old_mind_palace_icon_path = main.MIND_PALACE_ICON_PATH
     old_todo_tasks_path = main.TODO_TASKS_PATH
+    old_todo_dashboard_token = main.TODO_DASHBOARD_TOKEN
     main.VAULT_DIR = temp_vault.name
     main.KNOWLEDGE_DIR = os.path.join(temp_vault.name, "04_Knowledge")
     main.DAILY_DIR = os.path.join(temp_vault.name, "03_Daily")
@@ -152,6 +153,7 @@ def run():
     main.DISCUSSIONS_DIR = os.path.join(temp_vault.name, "02_Projects", "9002-VaultLINEBot", "WebDiscussionSessions")
     main.MIND_PALACE_ICON_PATH = os.path.join(main.APP_ASSETS_DIR, "mind-palace-icon.png")
     main.TODO_TASKS_PATH = ""
+    main.TODO_DASHBOARD_TOKEN = "todo-dashboard-secret"
     os.makedirs(main.APP_ASSETS_DIR, exist_ok=True)
     with open(main.MIND_PALACE_ICON_PATH, "wb") as f:
         f.write(b"custom-icon")
@@ -420,6 +422,8 @@ def run():
     with open(todo_path, "r", encoding="utf-8") as f:
         todo_content = f.read()
     assert "T" in todo_content
+    assert "## 待辦總覽" in todo_content
+    assert "## 機器資料區" in todo_content
     assert "SampleProjectA小數防呆明天問 Mark" in todo_content
     assert "- status: open" in todo_content
     assert "- due:" in todo_content
@@ -524,6 +528,36 @@ def run():
         },
     )
     second_task_id = main.load_todo_tasks()[-1]["id"]
+    bad_todos_response = client.get("/api/todos?token=bad-token")
+    assert bad_todos_response.status_code == 403
+    todos_response = client.get("/api/todos?token=todo-dashboard-secret")
+    assert todos_response.status_code == 200
+    todos_data = todos_response.json()
+    assert todos_data["stats"]["open"] == 1
+    assert any(task["id"] == second_task_id for task in todos_data["tasks"])
+    dashboard_response = client.get("/todos?token=todo-dashboard-secret")
+    assert dashboard_response.status_code == 200
+    assert "To-do Dashboard" in dashboard_response.text
+    assert "確定要將這筆待辦標記為完成" in dashboard_response.text
+    assert "max-height: calc(100vh - 280px)" in dashboard_response.text
+    assert "overflow: auto" in dashboard_response.text
+    assert "position: sticky" in dashboard_response.text
+    invalid_status_response = client.post(
+        f"/api/todos/{second_task_id}/status?token=todo-dashboard-secret",
+        json={"status": "waiting"},
+    )
+    assert invalid_status_response.status_code == 400
+    missing_status_response = client.post(
+        "/api/todos/T19990101-404/status?token=todo-dashboard-secret",
+        json={"status": "done"},
+    )
+    assert missing_status_response.status_code == 404
+    done_from_dashboard = client.post(
+        f"/api/todos/{second_task_id}/status?token=todo-dashboard-secret",
+        json={"status": "done"},
+    )
+    assert done_from_dashboard.status_code == 200
+    assert main.find_todo_task(second_task_id)["status"] == "done"
     send_event(
         client,
         {
@@ -995,6 +1029,7 @@ def run():
     main.APP_ASSETS_DIR = old_app_assets_dir
     main.MIND_PALACE_ICON_PATH = old_mind_palace_icon_path
     main.TODO_TASKS_PATH = old_todo_tasks_path
+    main.TODO_DASHBOARD_TOKEN = old_todo_dashboard_token
     temp_vault.cleanup()
 
 

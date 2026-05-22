@@ -55,6 +55,7 @@ USER_MODES: dict[str, dict] = {}
 DISCUSSION_FILE_LOCK = threading.RLock()
 TODO_FILE_LOCK = threading.RLock()
 TODO_TASKS_PATH = os.environ.get("TODO_TASKS_PATH", "").strip()
+TODO_DASHBOARD_TOKEN = os.environ.get("TODO_DASHBOARD_TOKEN", "").strip()
 LAST_REQUEST_BASE_URL = ""
 LOG_FILE = os.environ.get("BOT_LOG_FILE", os.path.join(os.path.dirname(__file__), "bot-debug.log"))
 APP_ASSETS_DIR = os.environ.get("APP_ASSETS_DIR", os.path.join(os.path.dirname(__file__), "assets"))
@@ -382,6 +383,24 @@ def get_todo_tasks_path() -> str:
     return TODO_TASKS_PATH or os.path.join(VAULT_DIR, "06_System", "ToDo", "tasks.md")
 
 
+def escape_markdown_table_cell(value: str) -> str:
+    return str(value or "").replace("\\", "\\\\").replace("|", "\\|").replace("\r", " ").replace("\n", "<br>")
+
+
+def todo_content_preview(content: str, limit: int = 42) -> str:
+    normalized = " ".join(str(content or "").split())
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: limit - 1].rstrip() + "..."
+
+
+def get_todo_dashboard_url_hint() -> str:
+    base_url = OPEN_NOTE_BASE_URL or LAST_REQUEST_BASE_URL.rstrip("/")
+    if not base_url:
+        return "/todos?token=<TODO_DASHBOARD_TOKEN>"
+    return base_url + "/todos?token=<TODO_DASHBOARD_TOKEN>"
+
+
 def todo_empty_file_content() -> str:
     return """---
 title: LINE Bot To-do Tasks
@@ -479,10 +498,67 @@ def serialize_todo_task(task: dict) -> str:
     )
 
 
+def build_todo_markdown_overview(tasks: list[dict]) -> str:
+    today = date.today().isoformat()
+    open_tasks = [task for task in tasks if task.get("status") == "open"]
+    due_today_or_overdue = [task for task in open_tasks if task.get("due") and task.get("due") <= today]
+    due_later = [task for task in open_tasks if task.get("due") and task.get("due") > today]
+    no_due = [task for task in open_tasks if not task.get("due")]
+    done_count = len([task for task in tasks if task.get("status") == "done"])
+    deleted_count = len([task for task in tasks if task.get("status") == "deleted"])
+
+    lines = [
+        "## 待辦總覽",
+        "",
+        f"- 未完成：{len(open_tasks)}",
+        f"- 今日 / 逾期：{len(due_today_or_overdue)}",
+        f"- 有期限未完成：{len(due_today_or_overdue) + len(due_later)}",
+        f"- 無期限未完成：{len(no_due)}",
+        f"- 已完成：{done_count}",
+        f"- 已刪除：{deleted_count}",
+        f"- Dashboard：`{get_todo_dashboard_url_hint()}`",
+        "",
+        "Dashboard 入口由主機上的 9002 FastAPI 提供；筆電請使用 ngrok 網址加 `TODO_DASHBOARD_TOKEN` 開啟。",
+        "",
+    ]
+
+    sections = [
+        ("今日 / 逾期", sort_todo_tasks(due_today_or_overdue)),
+        ("有期限", sort_todo_tasks(due_later)),
+        ("無期限", sort_todo_tasks(no_due)),
+    ]
+    for title, section_tasks in sections:
+        lines.extend([f"### {title}", ""])
+        if not section_tasks:
+            lines.extend(["目前沒有任務。", ""])
+            continue
+        lines.extend(["| 期限 | 專案 | 內容 | ID |", "|---|---|---|---|"])
+        for task in section_tasks:
+            lines.append(
+                "| {due} | {project} | {content} | `{task_id}` |".format(
+                    due=escape_markdown_table_cell(task.get("due") or "-"),
+                    project=escape_markdown_table_cell(task.get("project") or "-"),
+                    content=escape_markdown_table_cell(todo_content_preview(task.get("content", ""))),
+                    task_id=escape_markdown_table_cell(task.get("id", "")),
+                )
+            )
+        lines.append("")
+
+    lines.extend(
+        [
+            "## 機器資料區",
+            "",
+            "下方區塊供 LINE Bot 讀寫，請不要手動重排任務區塊。",
+        ]
+    )
+    return "\n".join(lines).rstrip()
+
+
 def save_todo_tasks(tasks: list[dict]):
     path = ensure_todo_tasks_file()
     tmp_path = path + ".tmp"
     content = todo_empty_file_content().rstrip() + "\n\n"
+    content += build_todo_markdown_overview(tasks) + "\n\n"
     content += "\n".join(serialize_todo_task(task) for task in tasks)
     with TODO_FILE_LOCK:
         with open(tmp_path, "w", encoding="utf-8") as f:
@@ -637,6 +713,47 @@ def sort_todo_tasks(tasks: list[dict]) -> list[dict]:
         return due, updated
 
     return sorted(tasks, key=sort_key)
+
+
+def todo_dashboard_sort_key(task: dict):
+    status_order = {"open": 0, "done": 1, "deleted": 2}
+    due = task.get("due") or "9999-12-31"
+    updated = task.get("updated_at") or ""
+    return status_order.get(task.get("status"), 9), due, updated
+
+
+def build_todo_dashboard_stats(tasks: list[dict]) -> dict:
+    today = date.today().isoformat()
+    open_tasks = [task for task in tasks if task.get("status") == "open"]
+    return {
+        "total": len(tasks),
+        "open": len(open_tasks),
+        "today_or_overdue": len([task for task in open_tasks if task.get("due") and task.get("due") <= today]),
+        "with_due": len([task for task in open_tasks if task.get("due")]),
+        "without_due": len([task for task in open_tasks if not task.get("due")]),
+        "done": len([task for task in tasks if task.get("status") == "done"]),
+        "deleted": len([task for task in tasks if task.get("status") == "deleted"]),
+    }
+
+
+def todo_task_to_api(task: dict) -> dict:
+    reports = task.get("reports") or []
+    return {
+        "id": task.get("id", ""),
+        "status": task.get("status", "open"),
+        "status_label": build_todo_status_label(task.get("status", "open")),
+        "type": task.get("type", "work"),
+        "project": task.get("project", ""),
+        "owner": task.get("owner", ""),
+        "due": task.get("due", ""),
+        "created_at": task.get("created_at", ""),
+        "updated_at": task.get("updated_at", ""),
+        "source": task.get("source", "line_bot"),
+        "content": task.get("content", ""),
+        "reports": reports,
+        "latest_report": reports[-1] if reports else None,
+        "is_due": bool(task.get("due") and task.get("due") <= date.today().isoformat()),
+    }
 
 
 def get_open_todo_tasks(scope: str = "all") -> list[dict]:
@@ -1084,6 +1201,13 @@ def verify_open_note_signature(file_path: str, exp: int, sig: str):
     expected = sign_open_note(file_path, exp)
     if not hmac.compare_digest(sig, expected):
         raise HTTPException(status_code=403, detail="Invalid open-note signature")
+
+
+def verify_todo_dashboard_token(token: str):
+    if not TODO_DASHBOARD_TOKEN:
+        raise HTTPException(status_code=503, detail="TODO_DASHBOARD_TOKEN is not configured")
+    if not hmac.compare_digest(str(token or ""), TODO_DASHBOARD_TOKEN):
+        raise HTTPException(status_code=403, detail="Invalid dashboard token")
 
 
 def get_today_daily_report_path() -> str:
@@ -1856,6 +1980,470 @@ def start_todo_report_mode(reply_token: str, user_id: str, task_id: str):
         return
     set_user_mode(user_id, "todo_report", task_id=task_id)
     reply_messages(reply_token, [build_todo_report_mode_message(task)])
+
+
+@app.get("/api/todos")
+def get_todos(token: str = ""):
+    verify_todo_dashboard_token(token)
+    tasks = sorted(load_todo_tasks(), key=todo_dashboard_sort_key)
+    return {
+        "stats": build_todo_dashboard_stats(tasks),
+        "tasks": [todo_task_to_api(task) for task in tasks],
+    }
+
+
+@app.post("/api/todos/{task_id}/status")
+async def update_todo_status_from_dashboard(task_id: str, request: Request, token: str = ""):
+    verify_todo_dashboard_token(token)
+    payload = await request.json()
+    status = str(payload.get("status", "")).strip()
+    if status not in {"open", "done", "deleted"}:
+        raise HTTPException(status_code=400, detail="status must be open, done, or deleted")
+    task = update_todo_task_status(task_id, status)
+    if not task:
+        raise HTTPException(status_code=404, detail="Todo task not found")
+    return {"task": todo_task_to_api(task), "stats": build_todo_dashboard_stats(load_todo_tasks())}
+
+
+@app.get("/todos", response_class=HTMLResponse)
+def todos_dashboard(token: str = ""):
+    verify_todo_dashboard_token(token)
+    token_json = json.dumps(token)
+    return HTMLResponse(
+        f"""<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>To-do Dashboard</title>
+  <style>
+    :root {{
+      color-scheme: light;
+      --paper: #f4f1ea;
+      --ink: #20211d;
+      --muted: #6f7068;
+      --line: #d8d1c5;
+      --panel: #fffdf7;
+      --accent: #0f7b63;
+      --accent-ink: #ffffff;
+      --warn: #a24632;
+      --done: #60736a;
+      --shadow: rgba(69, 54, 35, 0.12);
+    }}
+    * {{
+      box-sizing: border-box;
+    }}
+    body {{
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Segoe UI", "Noto Sans TC", sans-serif;
+      letter-spacing: 0;
+      color: var(--ink);
+      background:
+        linear-gradient(90deg, rgba(32, 33, 29, 0.035) 1px, transparent 1px) 0 0 / 28px 28px,
+        linear-gradient(rgba(32, 33, 29, 0.03) 1px, transparent 1px) 0 0 / 28px 28px,
+        var(--paper);
+    }}
+    main {{
+      width: min(1180px, calc(100vw - 28px));
+      margin: 0 auto;
+      padding: 28px 0 46px;
+    }}
+    header {{
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 18px;
+      align-items: end;
+      padding-bottom: 18px;
+      border-bottom: 2px solid var(--ink);
+    }}
+    h1 {{
+      margin: 0;
+      font-size: clamp(28px, 5vw, 54px);
+      line-height: 0.95;
+      font-family: Georgia, "Times New Roman", "Noto Serif TC", serif;
+      font-weight: 700;
+    }}
+    .subtitle {{
+      margin: 10px 0 0;
+      max-width: 720px;
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1.65;
+    }}
+    .sync {{
+      text-align: right;
+      color: var(--muted);
+      font-size: 13px;
+      white-space: nowrap;
+    }}
+    .stats {{
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 1px;
+      margin: 18px 0;
+      border: 1px solid var(--ink);
+      background: var(--ink);
+      box-shadow: 0 16px 28px var(--shadow);
+    }}
+    .stat {{
+      min-width: 0;
+      padding: 14px;
+      background: var(--panel);
+    }}
+    .stat span {{
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+    }}
+    .stat strong {{
+      display: block;
+      margin-top: 6px;
+      font-size: 28px;
+      line-height: 1;
+      font-family: Georgia, "Times New Roman", serif;
+    }}
+    .toolbar {{
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      justify-content: space-between;
+      margin: 18px 0 12px;
+    }}
+    .filters {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }}
+    button {{
+      min-height: 38px;
+      border: 1px solid var(--ink);
+      border-radius: 6px;
+      padding: 8px 12px;
+      background: var(--panel);
+      color: var(--ink);
+      font: inherit;
+      font-size: 14px;
+      cursor: pointer;
+      transition: transform 140ms ease, background 140ms ease, color 140ms ease;
+    }}
+    button:hover {{
+      transform: translateY(-1px);
+    }}
+    button.active {{
+      background: var(--ink);
+      color: var(--panel);
+    }}
+    .refresh {{
+      background: var(--accent);
+      border-color: var(--accent);
+      color: var(--accent-ink);
+      font-weight: 700;
+    }}
+    .table-wrap {{
+      overflow: auto;
+      max-height: calc(100vh - 280px);
+      min-height: 360px;
+      border: 1px solid var(--ink);
+      background: var(--panel);
+      box-shadow: 0 18px 36px var(--shadow);
+    }}
+    table {{
+      width: 100%;
+      min-width: 920px;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }}
+    th, td {{
+      border-bottom: 1px solid var(--line);
+      padding: 12px 10px;
+      vertical-align: top;
+      text-align: left;
+      font-size: 14px;
+    }}
+    th {{
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      background: #ebe4d7;
+      color: #3f403a;
+      font-size: 12px;
+      letter-spacing: 0;
+      box-shadow: 0 1px 0 var(--ink);
+    }}
+    tr.done td {{
+      color: var(--done);
+      background: #f6f4ee;
+    }}
+    tr.deleted td {{
+      color: #9b9186;
+      background: #f1eee7;
+      text-decoration: line-through;
+    }}
+    .check-col {{
+      width: 64px;
+      text-align: center;
+    }}
+    .due-col {{
+      width: 116px;
+    }}
+    .project-col {{
+      width: 150px;
+    }}
+    .id-col {{
+      width: 142px;
+      font-family: Consolas, "Cascadia Mono", monospace;
+      font-size: 13px;
+    }}
+    .status-pill {{
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 12px;
+      background: #fffaf0;
+      color: var(--muted);
+    }}
+    .due {{
+      font-weight: 700;
+    }}
+    .due.hot {{
+      color: var(--warn);
+    }}
+    .content {{
+      line-height: 1.55;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }}
+    .report {{
+      margin-top: 7px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }}
+    input[type="checkbox"] {{
+      width: 22px;
+      height: 22px;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }}
+    .empty {{
+      padding: 30px 16px;
+      text-align: center;
+      color: var(--muted);
+    }}
+    .status-line {{
+      min-height: 20px;
+      color: var(--muted);
+      font-size: 13px;
+    }}
+    @media (max-width: 760px) {{
+      main {{
+        width: min(100vw - 18px, 1180px);
+        padding-top: 18px;
+      }}
+      header {{
+        grid-template-columns: 1fr;
+      }}
+      .sync {{
+        text-align: left;
+        white-space: normal;
+      }}
+      .stats {{
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }}
+      .toolbar {{
+        align-items: stretch;
+        flex-direction: column;
+      }}
+      .refresh {{
+        width: 100%;
+      }}
+      .table-wrap {{
+        max-height: calc(100vh - 330px);
+        min-height: 320px;
+      }}
+    }}
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>To-do Dashboard</h1>
+        <p class="subtitle">主機 FastAPI 直接讀寫 vault 的 To-do 原始檔；筆電透過 ngrok 操作，狀態會回到 LINE Bot 共用的 `tasks.md`。</p>
+      </div>
+      <div class="sync">
+        <div id="updated-at">尚未同步</div>
+        <div id="status-line" class="status-line"></div>
+      </div>
+    </header>
+    <section id="stats" class="stats" aria-label="待辦統計"></section>
+    <div class="toolbar">
+      <div class="filters" role="tablist" aria-label="待辦篩選">
+        <button type="button" class="active" data-filter="open">未完成</button>
+        <button type="button" data-filter="today">今日與逾期</button>
+        <button type="button" data-filter="all">全部</button>
+        <button type="button" data-filter="done">已完成</button>
+        <button type="button" data-filter="deleted">已刪除</button>
+      </div>
+      <button type="button" id="refresh" class="refresh">重新整理</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th class="check-col">完成</th>
+            <th class="due-col">期限</th>
+            <th class="project-col">專案</th>
+            <th>內容</th>
+            <th class="id-col">ID</th>
+            <th>狀態</th>
+            <th>更新時間</th>
+          </tr>
+        </thead>
+        <tbody id="task-body"></tbody>
+      </table>
+      <div id="empty" class="empty" hidden>目前沒有符合條件的待辦。</div>
+    </div>
+  </main>
+  <script>
+    const token = {token_json};
+    const state = {{
+      filter: "open",
+      tasks: [],
+      stats: {{}}
+    }};
+
+    const taskBody = document.getElementById("task-body");
+    const empty = document.getElementById("empty");
+    const statusLine = document.getElementById("status-line");
+    const updatedAt = document.getElementById("updated-at");
+    const statsEl = document.getElementById("stats");
+
+    const escapeHtml = (value) => String(value || "").replace(/[&<>"']/g, (char) => ({{
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;"
+    }}[char]));
+
+    const setStatus = (text) => {{
+      statusLine.textContent = text || "";
+    }};
+
+    const matchesFilter = (task) => {{
+      if (state.filter === "all") return true;
+      if (state.filter === "today") return task.status === "open" && task.is_due;
+      return task.status === state.filter;
+    }};
+
+    const renderStats = () => {{
+      const items = [
+        ["未完成", state.stats.open || 0],
+        ["今日 / 逾期", state.stats.today_or_overdue || 0],
+        ["有期限", state.stats.with_due || 0],
+        ["無期限", state.stats.without_due || 0],
+        ["已完成", state.stats.done || 0],
+        ["已刪除", state.stats.deleted || 0]
+      ];
+      statsEl.innerHTML = items.map(([label, value]) => `
+        <div class="stat"><span>${{escapeHtml(label)}}</span><strong>${{escapeHtml(value)}}</strong></div>
+      `).join("");
+    }};
+
+    const renderTasks = () => {{
+      const rows = state.tasks.filter(matchesFilter);
+      taskBody.innerHTML = rows.map((task) => {{
+        const latest = task.latest_report ? `<div class="report">最近回報：${{escapeHtml(task.latest_report.content)}}</div>` : "";
+        const disabled = task.status !== "open" ? "disabled" : "";
+        const checked = task.status === "done" ? "checked" : "";
+        const dueClass = task.is_due && task.status === "open" ? "due hot" : "due";
+        return `
+          <tr class="${{escapeHtml(task.status)}}">
+            <td class="check-col"><input type="checkbox" data-task-id="${{escapeHtml(task.id)}}" ${{checked}} ${{disabled}} aria-label="完成 ${{escapeHtml(task.id)}}"></td>
+            <td><span class="${{dueClass}}">${{escapeHtml(task.due || "-")}}</span></td>
+            <td>${{escapeHtml(task.project || "-")}}</td>
+            <td><div class="content">${{escapeHtml(task.content)}}</div>${{latest}}</td>
+            <td class="id-col">${{escapeHtml(task.id)}}</td>
+            <td><span class="status-pill">${{escapeHtml(task.status_label)}}</span></td>
+            <td>${{escapeHtml(task.updated_at || "-")}}</td>
+          </tr>
+        `;
+      }}).join("");
+      empty.hidden = rows.length !== 0;
+    }};
+
+    const getTaskConfirmText = (taskId) => {{
+      const task = state.tasks.find((item) => item.id === taskId);
+      const content = task ? String(task.content || "").replace(/\\s+/g, " ").trim() : "";
+      const preview = content.length > 48 ? content.slice(0, 47) + "..." : content;
+      return `確定要將這筆待辦標記為完成？\\n\\n${{taskId}}${{preview ? "\\n" + preview : ""}}`;
+    }};
+
+    const render = () => {{
+      renderStats();
+      renderTasks();
+    }};
+
+    const loadTodos = async () => {{
+      setStatus("同步中...");
+      const response = await fetch(`/api/todos?token=${{encodeURIComponent(token)}}`);
+      if (!response.ok) {{
+        setStatus("同步失敗");
+        return;
+      }}
+      const data = await response.json();
+      state.tasks = data.tasks || [];
+      state.stats = data.stats || {{}};
+      updatedAt.textContent = "同步時間 " + new Date().toLocaleString("zh-TW", {{hour12: false}});
+      setStatus("");
+      render();
+    }};
+
+    const setTaskStatus = async (taskId, status) => {{
+      setStatus("寫入中...");
+      const response = await fetch(`/api/todos/${{encodeURIComponent(taskId)}}/status?token=${{encodeURIComponent(token)}}`, {{
+        method: "POST",
+        headers: {{"Content-Type": "application/json"}},
+        body: JSON.stringify({{status}})
+      }});
+      if (!response.ok) {{
+        setStatus("寫入失敗，已重新整理");
+        await loadTodos();
+        return;
+      }}
+      await loadTodos();
+    }};
+
+    document.querySelectorAll("[data-filter]").forEach((button) => {{
+      button.addEventListener("click", () => {{
+        state.filter = button.dataset.filter;
+        document.querySelectorAll("[data-filter]").forEach((item) => item.classList.toggle("active", item === button));
+        renderTasks();
+      }});
+    }});
+
+    taskBody.addEventListener("change", async (event) => {{
+      const target = event.target;
+      if (!target.matches('input[type="checkbox"][data-task-id]')) return;
+      if (target.checked && !confirm(getTaskConfirmText(target.dataset.taskId))) {{
+        target.checked = false;
+        return;
+      }}
+      target.disabled = true;
+      await setTaskStatus(target.dataset.taskId, target.checked ? "done" : "open");
+    }});
+
+    document.getElementById("refresh").addEventListener("click", loadTodos);
+    loadTodos();
+  </script>
+</body>
+</html>"""
+    )
 
 
 @app.get("/discussions", response_class=HTMLResponse)
