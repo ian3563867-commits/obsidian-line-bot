@@ -130,12 +130,21 @@ def with_home_quick_reply(messages: list[dict]) -> list[dict]:
     return prepared
 
 
-def ask_agent(prompt: str, allow_write: bool = False) -> str:
+def ask_agent(prompt: str, allow_write: bool = False, life_override: bool = False) -> str:
     if AGENT_BACKEND == "claude":
-        return ask_claude(prompt, allow_write=allow_write)
+        return ask_claude(prompt, allow_write=allow_write, life_override=life_override)
     if AGENT_BACKEND == "codex":
-        return ask_codex(prompt, allow_write=allow_write)
+        return ask_codex(prompt, allow_write=allow_write, life_override=life_override)
     return f"未知 AGENT_BACKEND={AGENT_BACKEND}，請設定為 claude 或 codex。"
+
+
+def call_ask_agent(prompt: str, allow_write: bool = False, life_override: bool = False) -> str:
+    try:
+        return ask_agent(prompt, allow_write=allow_write, life_override=life_override)
+    except TypeError as exc:
+        if "life_override" not in str(exc):
+            raise
+        return ask_agent(prompt, allow_write=allow_write)
 
 
 def answer_query(prompt: str) -> tuple[str, str]:
@@ -143,9 +152,18 @@ def answer_query(prompt: str) -> tuple[str, str]:
     if precheck.hit:
         log_debug(
             f"[PRECHECK HIT] prompt={prompt[:80]!r} "
+            f"mode={precheck.mode} life_override={precheck.life_override} "
             f"blocks={len(precheck.source_blocks)} entries={len(precheck.matched_entries)}"
         )
-        return ask_agent(build_preloaded_prompt(prompt, precheck), allow_write=False), "precheck"
+        source = "manifest" if precheck.mode == "manifest_candidates" else "precheck"
+        return (
+            call_ask_agent(
+                build_preloaded_prompt(prompt, precheck),
+                allow_write=False,
+                life_override=precheck.life_override,
+            ),
+            source,
+        )
     if precheck.mode == "candidate_list":
         log_debug(
             f"[PRECHECK CANDIDATES] prompt={prompt[:80]!r} "
@@ -157,9 +175,9 @@ def answer_query(prompt: str) -> tuple[str, str]:
             f"[PRECHECK HINTS] prompt={prompt[:80]!r} "
             f"entries={len(precheck.matched_entries)} reason={precheck.fallback_reason}"
         )
-        return ask_agent(build_index_hint_prompt(prompt, precheck), allow_write=False), "index_hints"
+        return call_ask_agent(build_index_hint_prompt(prompt, precheck), allow_write=False), "index_hints"
     log_debug(f"[PRECHECK FALLBACK] prompt={prompt[:80]!r} reason={precheck.fallback_reason}")
-    return ask_agent(prompt, allow_write=False), "fallback"
+    return call_ask_agent(prompt, allow_write=False), "fallback"
 
 
 WRITE_PREFIXES = ("紀錄：", "紀錄:", "記錄：", "記錄:", "新增紀錄：", "新增紀錄:", "新增記錄：", "新增記錄:")

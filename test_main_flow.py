@@ -11,6 +11,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 import main
+from build_search_manifest import write_manifest
 
 
 CALLS = []
@@ -27,8 +28,8 @@ def fake_post(url, headers=None, json=None, **kwargs):
     return Resp()
 
 
-def fake_ask_agent(prompt, allow_write=False):
-    AGENT_CALLS.append({"prompt": prompt, "allow_write": allow_write})
+def fake_ask_agent(prompt, allow_write=False, life_override=False):
+    AGENT_CALLS.append({"prompt": prompt, "allow_write": allow_write, "life_override": life_override})
     if SLOW_CONTEXT_AGENT and "建立第一輪討論背景包" in prompt:
         time.sleep(0.2)
     if "問題回報內容" in prompt:
@@ -258,6 +259,21 @@ def run():
         encoding="utf-8",
     ) as f:
         f.write("# Daily Report 2026-04-25\n\n| item | status |\n|---|---|\n| test | OK |\n")
+    car_audio_path = os.path.join(temp_vault.name, "02_Projects", "生活", "20260516-汽車音響升級決策紀錄.md")
+    os.makedirs(os.path.dirname(car_audio_path), exist_ok=True)
+    with open(car_audio_path, "w", encoding="utf-8") as f:
+        f.write(
+            "---\n"
+            "title: 汽車音響升級完整決策紀錄（最終版）\n"
+            "date: 2026-05-16\n"
+            "tags: [life, 汽車音響, 消費決策, 購物]\n"
+            "project: 生活\n"
+            "---\n\n"
+            "# 汽車音響升級完整決策紀錄（最終版）\n\n"
+            "## Feelart vs HECO + DSP\n\n"
+            "最終建議：HECO + DSP。\n"
+        )
+    write_manifest(temp_vault.name)
     it_folder = os.path.join(main.KNOWLEDGE_DIR, "IT通用")
     os.makedirs(it_folder, exist_ok=True)
     for idx in range(1, 8):
@@ -306,9 +322,19 @@ def run():
     answer, answer_source = main.answer_query("查詢家庭資產")
     assert answer_source == "precheck"
     assert answer.startswith("AGENT:")
+    assert AGENT_CALLS[-1]["life_override"] is True
     assert "家庭資產現況" in AGENT_CALLS[-1]["prompt"]
     assert "生活/20260423-家庭資產現況.md" in AGENT_CALLS[-1]["prompt"]
     assert "家庭合計：2,098,457" not in AGENT_CALLS[-1]["prompt"]
+    AGENT_CALLS.clear()
+
+    answer, answer_source = main.answer_query("查詢汽車音響")
+    assert answer_source == "manifest"
+    assert answer.startswith("AGENT:")
+    assert AGENT_CALLS[-1]["life_override"] is True
+    assert "Python deterministic index pre-check" in AGENT_CALLS[-1]["prompt"]
+    assert "02_Projects/生活/20260516-汽車音響升級決策紀錄.md" in AGENT_CALLS[-1]["prompt"]
+    assert "HECO + DSP" not in AGENT_CALLS[-1]["prompt"]
     AGENT_CALLS.clear()
 
     answer, answer_source = main.answer_query("查詢SampleProjectD目前問題")

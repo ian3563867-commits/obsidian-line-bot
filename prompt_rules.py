@@ -6,8 +6,8 @@ def is_life(prompt: str) -> bool:
     return any(k in lower for k in _LIFE_KEYWORDS)
 
 
-def build_vault_prompt(prompt: str, allow_write: bool = False) -> str:
-    life = is_life(prompt)
+def build_vault_prompt(prompt: str, allow_write: bool = False, life_override: bool = False) -> str:
+    life = is_life(prompt) or life_override
     if allow_write:
         execution_rule = (
             "【執行要求】你現在不是在確認規則，而是要立刻完成使用者問題。\n"
@@ -23,9 +23,14 @@ def build_vault_prompt(prompt: str, allow_write: bool = False) -> str:
         )
 
     if life:
+        life_reason = (
+            "本次經 Python pre-check 嚴格命中，確認為使用者主動查生活內容，允許讀取候選 life 檔案。"
+            if life_override
+            else "因使用者訊息包含生活/Life/life/個人/personal 關鍵字，若寫入 vault，frontmatter tags 必須包含 life。"
+        )
         classification_rule = (
             "【本次問題分類】life=True。\n"
-            "因使用者訊息包含生活/Life/life/個人/personal 關鍵字，若寫入 vault，frontmatter tags 必須包含 life。\n\n"
+            f"{life_reason}\n\n"
         )
         query_steps = (
             "【查詢 vault 必須執行的步驟 - 保守三層搜尋實驗版】\n"

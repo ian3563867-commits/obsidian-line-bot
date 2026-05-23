@@ -1,4 +1,5 @@
 import os
+import json
 import re
 from dataclasses import dataclass
 
@@ -94,10 +95,11 @@ class PrecheckResult:
     matched_entries: list[dict[str, str]]
     source_blocks: list[SourceBlock]
     fallback_reason: str
+    life_override: bool = False
 
     @property
     def hit(self) -> bool:
-        return self.mode in {"candidate_files", "preloaded_context"} and bool(self.source_blocks)
+        return self.mode in {"candidate_files", "preloaded_context", "manifest_candidates"} and bool(self.source_blocks)
 
 
 def run_precheck(query: str, vault_dir: str, max_blocks: int = 3) -> PrecheckResult:
@@ -110,6 +112,9 @@ def run_precheck(query: str, vault_dir: str, max_blocks: int = 3) -> PrecheckRes
     strong_precheck_allowed = not deep_search_required and (_is_tool_query(query) or asset_query)
     if not strong_precheck_allowed:
         hints = _index_hint_entries(query, all_entries, max_blocks)
+        manifest = _manifest_precheck(query, vault_dir, max_blocks)
+        if manifest and manifest.life_override:
+            return manifest
         if hints:
             return PrecheckResult(
                 mode="index_hints",
@@ -118,12 +123,17 @@ def run_precheck(query: str, vault_dir: str, max_blocks: int = 3) -> PrecheckRes
                 source_blocks=[],
                 fallback_reason="index hints only; deep search still required",
             )
+        if manifest:
+            return manifest
         reason = "time-sensitive, open-item, or identifier query" if deep_search_required else "no index hints"
         return _fallback(reason)
 
     entries = _asset_entries(all_entries) if asset_query else [entry for entry in all_entries if entry.high_value]
     if not entries:
         hints = _index_hint_entries(query, all_entries, max_blocks)
+        manifest = _manifest_precheck(query, vault_dir, max_blocks)
+        if manifest and manifest.life_override:
+            return manifest
         if hints:
             return PrecheckResult(
                 mode="index_hints",
@@ -132,6 +142,8 @@ def run_precheck(query: str, vault_dir: str, max_blocks: int = 3) -> PrecheckRes
                 source_blocks=[],
                 fallback_reason="no strong deterministic entries; index hints only",
             )
+        if manifest:
+            return manifest
         return _fallback("no deterministic index entries")
 
     candidates = []
@@ -160,6 +172,9 @@ def run_precheck(query: str, vault_dir: str, max_blocks: int = 3) -> PrecheckRes
 
     if not candidates:
         hints = _index_hint_entries(query, all_entries, max_blocks)
+        manifest = _manifest_precheck(query, vault_dir, max_blocks)
+        if manifest and manifest.life_override:
+            return manifest
         if hints:
             return PrecheckResult(
                 mode="index_hints",
@@ -168,6 +183,8 @@ def run_precheck(query: str, vault_dir: str, max_blocks: int = 3) -> PrecheckRes
                 source_blocks=[],
                 fallback_reason="no strong deterministic match; index hints only",
             )
+        if manifest:
+            return manifest
         return _fallback("no deterministic index match")
 
     project_candidates = [item for item in candidates if _entry_matches_query_project(query, item[1])]
@@ -214,6 +231,7 @@ def run_precheck(query: str, vault_dir: str, max_blocks: int = 3) -> PrecheckRes
         matched_entries=matched_entries,
         source_blocks=blocks,
         fallback_reason="",
+        life_override=any("life" in entry.tags.lower() for _, entry, _, _ in candidates[:max_blocks]),
     )
 
 
@@ -294,6 +312,23 @@ def read_index_entries(vault_dir: str) -> list[IndexEntry]:
     return entries
 
 
+def read_manifest(vault_dir: str) -> list[dict]:
+    manifest_path = os.path.join(vault_dir, "06_System", "Search", "vault_search_manifest.jsonl")
+    if not os.path.isfile(manifest_path):
+        return []
+    records = []
+    with open(manifest_path, "r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return records
+
+
 def resolve_wikilink(vault_dir: str, page: str) -> str | None:
     normalized = page.replace("/", os.sep).replace("\\", os.sep)
     candidates = []
@@ -351,6 +386,74 @@ def build_candidate_file_hint(path: str, toc_entry: TocEntry | None) -> SourceBl
         content=hint,
         match_reason=reason,
     )
+
+
+def _manifest_precheck(query: str, vault_dir: str, max_blocks: int) -> PrecheckResult | None:
+    life_candidates = []
+    candidates = []
+    for record in read_manifest(vault_dir):
+        if record.get("life"):
+            if not _strict_life_match(query, record):
+                continue
+            life_candidates.append((100, record))
+            continue
+        else:
+            haystack = " ".join(
+                [
+                    str(record.get("path", "")),
+                    str(record.get("title", "")),
+                    str(record.get("project", "")),
+                    " ".join(record.get("tags") or []),
+                    " ".join(record.get("aliases") or []),
+                    " ".join(record.get("headings") or []),
+                ]
+            )
+            score = _score_text(query, haystack)
+            if score <= 0:
+                continue
+        candidates.append((score, record))
+
+    if life_candidates:
+        candidates = life_candidates
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda item: (-item[0], str(item[1].get("path", ""))))
+    blocks: list[SourceBlock] = []
+    matched_entries: list[dict[str, str]] = []
+    selected_records = []
+    for _, record in candidates[:max_blocks]:
+        path = os.path.join(vault_dir, str(record.get("path", "")).replace("/", os.sep))
+        block = build_candidate_file_hint(path, None)
+        if not block:
+            continue
+        blocks.append(block)
+        matched_entries.append(_manifest_entry_payload(record))
+        selected_records.append(record)
+
+    if not blocks:
+        return None
+
+    return PrecheckResult(
+        mode="manifest_candidates",
+        confidence="high",
+        matched_entries=matched_entries,
+        source_blocks=blocks,
+        fallback_reason="",
+        life_override=any(bool(record.get("life")) for record in selected_records),
+    )
+
+
+def _strict_life_match(query: str, record: dict) -> bool:
+    query_lower = query.lower()
+    units = []
+    units.extend(record.get("tags") or [])
+    units.extend(record.get("aliases") or [])
+    for unit in units:
+        normalized = str(unit).strip().lower()
+        if len(normalized) >= 2 and normalized in query_lower:
+            return True
+    return False
 
 
 def strip_markdown_inline(text: str) -> str:
@@ -527,6 +630,16 @@ def _entry_payload(entry: IndexEntry) -> dict[str, str]:
         "title": entry.title,
         "summary": entry.summary,
         "tags": entry.tags,
+    }
+
+
+def _manifest_entry_payload(record: dict) -> dict[str, str]:
+    tags = record.get("tags") or []
+    return {
+        "page": str(record.get("path", "")),
+        "title": str(record.get("title") or record.get("filename") or record.get("path", "")),
+        "summary": str(record.get("project") or record.get("folder") or record.get("kind") or ""),
+        "tags": ", ".join(str(tag) for tag in tags),
     }
 
 
