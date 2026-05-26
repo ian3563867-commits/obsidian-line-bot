@@ -38,6 +38,8 @@ GENERIC_PROJECT_TERMS = {
     "常用sql",
 }
 
+PROJECT_CONTEXT_TERMS = ("SampleProjectB", "SampleProjectA", "SampleProjectC", "SampleProjectD", "SampleProjectE", "SampleProjectF")
+
 TIME_SENSITIVE_TERMS = (
     "最新",
     "最近",
@@ -187,19 +189,31 @@ def run_precheck(query: str, vault_dir: str, max_blocks: int = 3) -> PrecheckRes
             return manifest
         return _fallback("no deterministic index match")
 
-    project_candidates = [item for item in candidates if _entry_matches_query_project(query, item[1])]
+    project_candidates = [item for item in candidates if _entry_matches_named_project_context(query, item[1])]
     project_named = bool(project_candidates)
     if project_named:
-        candidates = project_candidates
-    elif _is_ambiguous_message_query(query, candidates):
-        return PrecheckResult(
-            mode="candidate_list",
-            confidence="ambiguous",
-            matched_entries=[_entry_payload(item[1]) for item in candidates[:max_blocks]],
-            source_blocks=[],
-            fallback_reason="message query has multiple project candidates and no explicit project",
-        )
-
+        conflict_candidates = _cross_project_tool_conflict_candidates(query, candidates, project_candidates, max_blocks)
+        if conflict_candidates:
+            return PrecheckResult(
+                mode="candidate_list",
+                confidence="ambiguous",
+                matched_entries=[_entry_payload(item[1]) for item in conflict_candidates],
+                source_blocks=[],
+                fallback_reason="project term conflicts with cross-project tool term",
+            )
+        candidates = [item for item in candidates if _entry_matches_named_project_context(query, item[1])]
+    else:
+        specific_operation_matches = _specific_operation_matches(query, candidates)
+        if len(specific_operation_matches) == 1:
+            candidates = specific_operation_matches
+        elif _is_ambiguous_message_query(query, candidates):
+            return PrecheckResult(
+                mode="candidate_list",
+                confidence="ambiguous",
+                matched_entries=[_entry_payload(item[1]) for item in candidates[:max_blocks]],
+                source_blocks=[],
+                fallback_reason="message query has multiple project candidates and no explicit project",
+            )
     candidates.sort(key=lambda item: (-item[0], item[1].title))
     top_score = candidates[0][0]
     top_candidates = [item for item in candidates if item[0] == top_score]
@@ -271,6 +285,23 @@ def build_index_hint_prompt(original_prompt: str, result: PrecheckResult) -> str
         "若 hints 與問題不符，請忽略 hints 並照原流程查詢。回答結尾仍需列出實際參考來源。",
         "",
         "Index hints：",
+    ]
+    for entry in result.matched_entries:
+        parts.append(f"- {entry['page']}：{entry['summary']}（tags: {entry['tags']}）")
+    parts.extend(["", "使用者原始問題：", original_prompt])
+    return "\n".join(parts)
+
+
+def build_candidate_search_prompt(original_prompt: str, result: PrecheckResult) -> str:
+    parts = [
+        "Python pre-check 找到多個可能入口，但未硬猜唯一答案。",
+        "這些候選入口是搜尋邊界，不是最終答案；請先 Read / 搜尋下方候選文件或 knowledge page。",
+        "請比較候選內容與使用者原始問題，嘗試縮小到最相關的段落、SQL、MSG、JSON、SOP 或操作步驟並回答。",
+        "不可只把候選清單回覆給使用者；只有在讀完候選後仍無法判定時，才請使用者補專案、系統或關鍵字。",
+        "若候選文件仍不足，請依原本保守三層搜尋規則，用問題中的具體詞彙在 02_Projects / 04_Knowledge 做精準 Grep 補齊。",
+        "回答結尾仍需列出實際參考來源。",
+        "",
+        "Candidate entries：",
     ]
     for entry in result.matched_entries:
         parts.append(f"- {entry['page']}：{entry['summary']}（tags: {entry['tags']}）")
@@ -516,7 +547,118 @@ def _is_ambiguous_message_query(query: str, candidates: list[tuple[int, IndexEnt
         item for item in candidates
         if any(term in item[1].tags for term in ("SampleProjectB", "SampleProjectA", "SampleProjectC", "SampleProjectD", "SampleProjectE", "SampleProjectF"))
     ]
+    if len(project_like) > 1 and len(_specific_operation_matches(query, project_like)) == 1:
+        return False
     return len(project_like) > 1
+
+
+def _specific_operation_matches(
+    query: str,
+    candidates: list[tuple[int, IndexEntry, str, TocEntry | None]],
+) -> list[tuple[int, IndexEntry, str, TocEntry | None]]:
+    query_terms = _specific_query_terms(query)
+    if not query_terms:
+        return []
+    matches = []
+    for item in candidates:
+        _, entry, _, toc_entry = item
+        text_parts = [entry.page, entry.title, entry.summary, entry.tags]
+        if toc_entry:
+            text_parts.extend([toc_entry.category, toc_entry.section, toc_entry.purpose, toc_entry.terms])
+        text = "".join(text_parts).lower()
+        if any(term in text for term in query_terms):
+            matches.append(item)
+    return matches
+
+
+def _specific_query_terms(query: str) -> set[str]:
+    terms = set()
+    ignored_terms = set(GENERIC_PROJECT_TERMS)
+    ignored_terms.update(TECHNICAL_QUERY_TERMS)
+    for token in re.findall(r"[a-z0-9][a-z0-9_-]*", query.lower()):
+        if len(token) >= 3 and token not in ignored_terms:
+            terms.add(token)
+    for chunk in re.findall(r"[\u4e00-\u9fff]{4,}", query):
+        normalized = re.sub(r"^(查詢|查|找|搜尋|看|幫我|請問)", "", chunk)
+        if len(normalized) >= 4:
+            terms.add(normalized.lower())
+        for size in range(4, min(8, len(normalized)) + 1):
+            for index in range(len(normalized) - size + 1):
+                term = normalized[index:index + size].lower()
+                if term not in ignored_terms and term not in {"message", "常用sql"}:
+                    terms.add(term)
+    return terms
+
+
+def _cross_project_tool_conflict_candidates(
+    query: str,
+    candidates: list[tuple[int, IndexEntry, str, TocEntry | None]],
+    project_candidates: list[tuple[int, IndexEntry, str, TocEntry | None]],
+    max_blocks: int,
+) -> list[tuple[int, IndexEntry, str, TocEntry | None]]:
+    specific_terms = _cross_project_specific_terms(query, project_candidates)
+    if not specific_terms:
+        return []
+    cross_project_matches = []
+    for item in candidates:
+        _, entry, _, toc_entry = item
+        if _entry_matches_named_project_context(query, entry) or not _is_cross_project_tool_entry(entry):
+            continue
+        text_parts = [entry.page, entry.title, entry.summary, entry.tags]
+        if toc_entry:
+            text_parts.extend([toc_entry.category, toc_entry.section, toc_entry.purpose, toc_entry.terms])
+        text = " ".join(text_parts).lower()
+        if any(term in text for term in specific_terms):
+            cross_project_matches.append(item)
+    if not cross_project_matches:
+        return []
+
+    combined = []
+    seen_pages = set()
+    for group in (project_candidates, cross_project_matches):
+        for item in sorted(group, key=lambda candidate: (-candidate[0], candidate[1].title)):
+            page = item[1].page
+            if page in seen_pages:
+                continue
+            combined.append(item)
+            seen_pages.add(page)
+            if len(combined) >= max_blocks:
+                return combined
+    return combined
+
+
+def _cross_project_specific_terms(
+    query: str,
+    project_candidates: list[tuple[int, IndexEntry, str, TocEntry | None]],
+) -> set[str]:
+    query_lower = query.lower()
+    project_terms = set()
+    for _, entry, _, _ in project_candidates:
+        project_terms.update(_project_terms(entry))
+
+    ignored_terms = set(GENERIC_PROJECT_TERMS)
+    ignored_terms.update(TECHNICAL_QUERY_TERMS)
+    ignored_terms.update(project_terms)
+    ignored_terms.update({"查詢", "搜尋", "請問", "幫我"})
+
+    terms = {
+        token
+        for token in re.findall(r"[a-z0-9][a-z0-9_-]*", query_lower)
+        if len(token) >= 3 and token not in ignored_terms
+    }
+    for chunk in re.findall(r"[\u4e00-\u9fff]{3,}", query):
+        normalized = re.sub(r"^(查詢|查|找|搜尋|看|幫我|請問)", "", chunk)
+        for size in range(3, min(8, len(normalized)) + 1):
+            for index in range(len(normalized) - size + 1):
+                term = normalized[index:index + size].lower()
+                if term not in ignored_terms and not any(project_term in term for project_term in project_terms):
+                    terms.add(term)
+    return terms
+
+
+def _is_cross_project_tool_entry(entry: IndexEntry) -> bool:
+    text = " ".join([entry.page, entry.title, entry.summary, entry.tags]).lower()
+    return "通用" in text or "cross-project" in text
 
 
 def _asset_entries(entries: list[IndexEntry]) -> list[IndexEntry]:
@@ -561,6 +703,10 @@ def _score_text(query: str, text: str) -> int:
 def _entry_matches_query_project(query: str, entry: IndexEntry) -> bool:
     query_lower = query.lower()
     return any(term in query_lower for term in _project_terms(entry))
+
+
+def _entry_matches_named_project_context(query: str, entry: IndexEntry) -> bool:
+    return any(term in query and term in entry.tags for term in PROJECT_CONTEXT_TERMS)
 
 
 def _index_hint_entries(query: str, entries: list[IndexEntry], limit: int) -> list[tuple[int, IndexEntry]]:

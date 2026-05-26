@@ -20,7 +20,7 @@ from fastapi.responses import HTMLResponse, Response
 
 from ask_claude import ask_claude
 from ask_codex import ask_codex
-from retrieval import build_index_hint_prompt, build_preloaded_prompt, format_candidate_summary, run_precheck
+from retrieval import build_candidate_search_prompt, build_index_hint_prompt, build_preloaded_prompt, run_precheck
 
 load_dotenv()
 
@@ -169,7 +169,7 @@ def answer_query(prompt: str) -> tuple[str, str]:
             f"[PRECHECK CANDIDATES] prompt={prompt[:80]!r} "
             f"entries={len(precheck.matched_entries)} reason={precheck.fallback_reason}"
         )
-        return format_candidate_summary(precheck), "candidate_list"
+        return call_ask_agent(build_candidate_search_prompt(prompt, precheck), allow_write=False), "candidate_search"
     if precheck.mode == "index_hints":
         log_debug(
             f"[PRECHECK HINTS] prompt={prompt[:80]!r} "

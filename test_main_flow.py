@@ -176,7 +176,7 @@ def run():
             "\n"
             "| 原始檔案 | 說明 | 標籤 |\n"
             "| -------- | ---- | ---- |\n"
-            "| [[02_Projects/0182-SampleProjectB/常用SQL]] | SampleProjectB WMS 常用 SQL / Message 入口；含關單、POClose/WOClose | WMS, SQL, Message, SampleProjectB |\n"
+            "| [[02_Projects/0182-SampleProjectB/常用SQL]] | SampleProjectB WMS 常用 SQL / Message 入口；含關單、POClose/WOClose、手動到站 | WMS, SQL, Message, SampleProjectB |\n"
             "| [[02_Projects/0188-SampleProjectA/常用sql]] | SampleProjectA-Site WMS 常用 SQL / Message 入口；含關單 Message、調撥單 UI 不能上架 | WMS, SQL, Message, SampleProjectA |\n"
             "| [[04_Knowledge/WMS通用/20260408-WMS常用SQL與API操作]] | WMS 通用 SQL / API 操作入口；含 ALERTSYS 通知系統查詢（NS_M_SEND_GROUP、NS_M_USER） | WMS, SQL, API, 通用, ALERTSYS, 通知系統 |\n"
         )
@@ -195,9 +195,14 @@ def run():
             "| 類別 | 段落 | 用途 | 常見查詢詞 |\n"
             "|---|---|---|---|\n"
             "| 關單 / 過帳異常 | [[#關單 / 過帳異常\\|關單 / 過帳異常]] | WO 關單、PO 關單 | WOClose、POClose、關單 |\n\n"
+            "| 到站 / 揀貨 / 棧板 | [[#到站 / 揀貨 / 棧板位置\\|到站 / 揀貨 / 棧板位置]] | 手動到站 Message Test 操作 | 手動到站、CarrierToDestLocation |\n\n"
             "## 關單 / 過帳異常\n\n"
             "```json\n"
             "{\"EventID\":\"T5F1U22_POClose\"}\n"
+            "```\n"
+            "## 到站 / 揀貨 / 棧板位置\n\n"
+            "```json\n"
+            "{\"EventID\":\"T4F1U13_CarrierToDestLocation\"}\n"
             "```\n"
         )
     with open(jianzhun_sql, "w", encoding="utf-8") as f:
@@ -306,17 +311,44 @@ def run():
     AGENT_CALLS.clear()
 
     answer, answer_source = main.answer_query("查詢關單msg")
-    assert answer_source == "candidate_list"
-    assert "多個可能入口" in answer
-    assert "02_Projects/0182-SampleProjectB/常用SQL" in answer
-    assert "02_Projects/0188-SampleProjectA/常用sql" in answer
-    assert AGENT_CALLS == []
+    assert answer_source == "candidate_search"
+    assert answer.startswith("AGENT:")
+    assert len(AGENT_CALLS) == 1
+    assert "多個可能入口" in AGENT_CALLS[-1]["prompt"]
+    assert "搜尋邊界，不是最終答案" in AGENT_CALLS[-1]["prompt"]
+    assert "不可只把候選清單回覆給使用者" in AGENT_CALLS[-1]["prompt"]
+    assert "02_Projects/0182-SampleProjectB/常用SQL" in AGENT_CALLS[-1]["prompt"]
+    assert "02_Projects/0188-SampleProjectA/常用sql" in AGENT_CALLS[-1]["prompt"]
+    AGENT_CALLS.clear()
+
+    answer, answer_source = main.answer_query("查詢手動到站MSG")
+    assert answer_source == "precheck"
+    assert answer.startswith("AGENT:")
+    assert "02_Projects/0182-SampleProjectB/常用SQL.md" in AGENT_CALLS[-1]["prompt"]
+    assert "到站 / 揀貨 / 棧板位置" in AGENT_CALLS[-1]["prompt"]
+    assert "CarrierToDestLocation" in AGENT_CALLS[-1]["prompt"]
+    AGENT_CALLS.clear()
 
     answer, answer_source = main.answer_query("查詢通知系統sql，關鍵字還有ALERTSYS")
     assert answer_source == "precheck"
     assert answer.startswith("AGENT:")
     assert "04_Knowledge/WMS通用/20260408-WMS常用SQL與API操作.md" in AGENT_CALLS[-1]["prompt"]
     assert "NS_M_SEND_GROUP" in AGENT_CALLS[-1]["prompt"]
+    AGENT_CALLS.clear()
+
+    answer, answer_source = main.answer_query("查詢ALERTSYS sql")
+    assert answer_source == "precheck"
+    assert answer.startswith("AGENT:")
+    assert "04_Knowledge/WMS通用/20260408-WMS常用SQL與API操作.md" in AGENT_CALLS[-1]["prompt"]
+    assert "02_Projects/0182-SampleProjectB/常用SQL.md" not in AGENT_CALLS[-1]["prompt"]
+    AGENT_CALLS.clear()
+
+    answer, answer_source = main.answer_query("查詢SampleProjectBALERTSYS sql")
+    assert answer_source == "candidate_search"
+    assert answer.startswith("AGENT:")
+    assert "02_Projects/0182-SampleProjectB/常用SQL" in AGENT_CALLS[-1]["prompt"]
+    assert "04_Knowledge/WMS通用/20260408-WMS常用SQL與API操作" in AGENT_CALLS[-1]["prompt"]
+    assert "ALERTSYS 通知系統查詢" in AGENT_CALLS[-1]["prompt"]
     AGENT_CALLS.clear()
 
     answer, answer_source = main.answer_query("查詢家庭資產")
