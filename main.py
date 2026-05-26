@@ -2023,6 +2023,19 @@ async def update_todo_status_from_dashboard(task_id: str, request: Request, toke
     return {"task": todo_task_to_api(task), "stats": build_todo_dashboard_stats(load_todo_tasks())}
 
 
+@app.post("/api/todos/{task_id}/report")
+async def add_todo_report_from_dashboard(task_id: str, request: Request, token: str = ""):
+    verify_todo_dashboard_token(token)
+    payload = await request.json()
+    report_text = str(payload.get("content", "")).strip()
+    if not report_text:
+        raise HTTPException(status_code=400, detail="report content is required")
+    task = append_todo_report(task_id, report_text)
+    if not task:
+        raise HTTPException(status_code=404, detail="Todo task not found")
+    return {"task": todo_task_to_api(task), "stats": build_todo_dashboard_stats(load_todo_tasks())}
+
+
 @app.get("/todos", response_class=HTMLResponse)
 def todos_dashboard(token: str = ""):
     verify_todo_dashboard_token(token)
@@ -2064,30 +2077,47 @@ def todos_dashboard(token: str = ""):
     }}
     main {{
       width: min(1180px, calc(100vw - 28px));
-      margin: 0 auto;
-      padding: 28px 0 46px;
+      margin: 16px auto;
+      padding: 18px 22px 22px;
+      border: 1px solid var(--ink);
+      border-radius: 10px;
+      background: rgba(255, 253, 247, 0.72);
+      box-shadow: 0 16px 34px rgba(69, 54, 35, 0.10);
     }}
     header {{
       display: grid;
       grid-template-columns: 1fr auto;
       gap: 18px;
       align-items: end;
-      padding-bottom: 18px;
-      border-bottom: 2px solid var(--ink);
+      padding-bottom: 14px;
+    }}
+    .title-row {{
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }}
+    .app-mark {{
+      display: grid;
+      place-items: center;
+      width: 28px;
+      height: 28px;
+      border: 2px solid var(--ink);
+      border-radius: 5px;
+      font-weight: 900;
     }}
     h1 {{
       margin: 0;
-      font-size: clamp(28px, 5vw, 54px);
-      line-height: 0.95;
+      font-size: clamp(26px, 3vw, 42px);
+      line-height: 1.08;
       font-family: Georgia, "Times New Roman", "Noto Serif TC", serif;
       font-weight: 700;
     }}
     .subtitle {{
-      margin: 10px 0 0;
+      margin: 8px 0 0;
       max-width: 720px;
       color: var(--muted);
-      font-size: 15px;
-      line-height: 1.65;
+      font-size: 14px;
+      line-height: 1.55;
     }}
     .sync {{
       text-align: right;
@@ -2095,29 +2125,44 @@ def todos_dashboard(token: str = ""):
       font-size: 13px;
       white-space: nowrap;
     }}
+    .sync strong {{
+      color: var(--ink);
+      font-weight: 600;
+    }}
     .stats {{
       display: grid;
-      grid-template-columns: repeat(6, minmax(0, 1fr));
-      gap: 1px;
-      margin: 18px 0;
-      border: 1px solid var(--ink);
-      background: var(--ink);
-      box-shadow: 0 16px 28px var(--shadow);
+      grid-template-columns: repeat(6, minmax(118px, 1fr));
+      gap: 0;
+      margin: 0 0 12px;
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255, 253, 247, 0.88);
     }}
     .stat {{
       min-width: 0;
-      padding: 14px;
-      background: var(--panel);
+      padding: 12px 16px;
+      border-right: 1px solid var(--line);
+      background: transparent;
+    }}
+    .stat:last-child {{
+      border-right: 0;
     }}
     .stat span {{
-      display: block;
+      display: flex;
+      gap: 7px;
+      align-items: center;
       color: var(--muted);
       font-size: 12px;
+    }}
+    .stat-icon {{
+      color: var(--ink);
+      font-size: 14px;
     }}
     .stat strong {{
       display: block;
       margin-top: 6px;
-      font-size: 28px;
+      font-size: 24px;
       line-height: 1;
       font-family: Georgia, "Times New Roman", serif;
     }}
@@ -2126,7 +2171,15 @@ def todos_dashboard(token: str = ""):
       gap: 10px;
       align-items: center;
       justify-content: space-between;
-      margin: 18px 0 12px;
+      margin: 0 0 12px;
+      position: sticky;
+      top: 0;
+      z-index: 8;
+      padding: 10px 0 8px;
+      background:
+        linear-gradient(90deg, rgba(32, 33, 29, 0.035) 1px, transparent 1px) 0 0 / 28px 28px,
+        linear-gradient(rgba(32, 33, 29, 0.03) 1px, transparent 1px) 0 0 / 28px 28px,
+        var(--paper);
     }}
     .filters {{
       display: flex;
@@ -2158,60 +2211,102 @@ def todos_dashboard(token: str = ""):
       color: var(--accent-ink);
       font-weight: 700;
     }}
-    .table-wrap {{
+    .danger {{
+      background: #fff7f2;
+      border-color: var(--warn);
+      color: var(--warn);
+      font-weight: 700;
+    }}
+    .workspace {{
+      display: grid;
+      grid-template-columns: minmax(340px, 0.9fr) minmax(420px, 1.1fr);
+      gap: 0;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255, 253, 247, 0.70);
+      overflow: visible;
+    }}
+    .list-pane {{
+      min-width: 0;
+      border-right: 1px solid var(--line);
+    }}
+    .list-head {{
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 14px 14px 10px;
+      color: var(--muted);
+      font-size: 13px;
+    }}
+    .task-list {{
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      max-height: calc(100vh - 326px);
       overflow: auto;
-      max-height: calc(100vh - 280px);
-      min-height: 360px;
-      border: 1px solid var(--ink);
-      background: var(--panel);
-      box-shadow: 0 18px 36px var(--shadow);
+      padding: 0 10px 16px;
     }}
-    table {{
-      width: 100%;
-      min-width: 920px;
-      border-collapse: collapse;
-      table-layout: fixed;
+    .task-card {{
+      display: grid;
+      grid-template-columns: 44px minmax(0, 1fr);
+      gap: 10px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255, 253, 247, 0.92);
+      box-shadow: none;
     }}
-    th, td {{
-      border-bottom: 1px solid var(--line);
-      padding: 12px 10px;
-      vertical-align: top;
-      text-align: left;
-      font-size: 14px;
+    .task-card.selected {{
+      border-color: var(--accent);
+      background: linear-gradient(90deg, rgba(15, 123, 99, 0.10), rgba(255, 253, 247, 0.94));
+      box-shadow: 0 10px 24px rgba(15, 123, 99, 0.10);
     }}
-    th {{
-      position: sticky;
-      top: 0;
-      z-index: 2;
-      background: #ebe4d7;
-      color: #3f403a;
-      font-size: 12px;
-      letter-spacing: 0;
-      box-shadow: 0 1px 0 var(--ink);
-    }}
-    tr.done td {{
+    .task-card.done, .task-card.deleted {{
       color: var(--done);
-      background: #f6f4ee;
+      background: rgba(246, 244, 238, 0.86);
     }}
-    tr.deleted td {{
+    .task-card.deleted {{
       color: #9b9186;
-      background: #f1eee7;
       text-decoration: line-through;
     }}
-    .check-col {{
-      width: 64px;
-      text-align: center;
+    .complete-button {{
+      width: 24px;
+      height: 24px;
+      min-height: 24px;
+      padding: 0;
+      margin-top: 8px;
+      border-color: #8d968e;
+      border-radius: 3px;
+      background: transparent;
+      font-weight: 800;
+      line-height: 1;
     }}
-    .due-col {{
-      width: 116px;
+    .complete-button:disabled {{
+      cursor: not-allowed;
+      opacity: 0.55;
     }}
-    .project-col {{
-      width: 150px;
+    .task-main {{
+      min-width: 0;
     }}
-    .id-col {{
-      width: 142px;
+    .task-topline, .task-meta, .detail-meta {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+      align-items: center;
+    }}
+    .task-topline {{
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }}
+    .task-id {{
+      color: var(--muted);
       font-family: Consolas, "Cascadia Mono", monospace;
-      font-size: 13px;
+      font-size: 12px;
+    }}
+    .card-title {{
+      margin: 8px 0 4px;
+      font-weight: 800;
+      line-height: 1.45;
     }}
     .status-pill {{
       display: inline-flex;
@@ -2230,10 +2325,157 @@ def todos_dashboard(token: str = ""):
     .due.hot {{
       color: var(--warn);
     }}
-    .content {{
+    .due-chip, .project-chip {{
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 12px;
+      background: #fffaf0;
+      color: var(--ink);
+    }}
+    .project-chip {{
+      background: #f3f5ef;
+    }}
+    .content, .detail-content {{
       line-height: 1.55;
       white-space: pre-wrap;
       word-break: break-word;
+    }}
+    .content {{
+      display: -webkit-box;
+      overflow: hidden;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      margin: 8px 0 10px;
+    }}
+    .select-task {{
+      min-height: 32px;
+      padding: 5px 10px;
+      border-color: var(--line);
+      color: var(--muted);
+      background: transparent;
+    }}
+    .detail-panel {{
+      position: sticky;
+      top: 74px;
+      align-self: start;
+      max-height: calc(100vh - 126px);
+      min-height: 0;
+      border: 0;
+      border-radius: 0;
+      background: var(--panel);
+      box-shadow: none;
+      overflow: hidden;
+    }}
+    .detail-shell {{
+      display: flex;
+      flex-direction: column;
+      max-height: calc(100vh - 126px);
+      min-height: 0;
+    }}
+    .detail-head {{
+      flex: 0 0 auto;
+      padding: 18px 18px 12px;
+      border-bottom: 1px solid var(--line);
+      background: #f7f2e8;
+    }}
+    .detail-headline {{
+      display: flex;
+      align-items: start;
+      justify-content: space-between;
+      gap: 14px;
+    }}
+    .icon-button {{
+      display: inline-grid;
+      place-items: center;
+      width: 34px;
+      height: 34px;
+      min-height: 34px;
+      padding: 0;
+      border-color: var(--line);
+      background: transparent;
+      font-size: 20px;
+    }}
+    .detail-title {{
+      margin: 0;
+      font-size: 20px;
+      line-height: 1.4;
+      font-weight: 800;
+    }}
+    .detail-body {{
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow: auto;
+      padding: 16px 18px;
+    }}
+    .info-grid, .more-grid {{
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      margin-top: 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      background: rgba(255, 253, 247, 0.82);
+    }}
+    .more-grid {{
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }}
+    .info-cell {{
+      min-width: 0;
+      padding: 9px 10px;
+      border-right: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      font-size: 13px;
+    }}
+    .info-cell:nth-child(5n), .more-grid .info-cell:nth-child(2n) {{
+      border-right: 0;
+    }}
+    .info-cell span {{
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 4px;
+    }}
+    .section-title {{
+      margin: 18px 0 8px;
+      font-size: 15px;
+      font-weight: 800;
+    }}
+    .report-box {{
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 11px 12px;
+      background: #f8f6ef;
+      line-height: 1.55;
+    }}
+    .detail-actions {{
+      flex: 0 0 auto;
+      display: flex;
+      gap: 10px;
+      justify-content: stretch;
+      padding: 12px 18px;
+      border-top: 1px solid var(--line);
+      background: rgba(255, 253, 247, 0.96);
+    }}
+    .detail-actions button {{
+      flex: 1 1 0;
+    }}
+    .detail-empty {{
+      height: 100%;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      color: var(--muted);
+      text-align: center;
+    }}
+    .mobile-detail {{
+      display: none;
+    }}
+    .bottom-nav {{
+      display: none;
     }}
     .report {{
       margin-top: 7px;
@@ -2259,29 +2501,127 @@ def todos_dashboard(token: str = ""):
     }}
     @media (max-width: 760px) {{
       main {{
-        width: min(100vw - 18px, 1180px);
-        padding-top: 18px;
+        width: 100vw;
+        min-height: 100vh;
+        margin: 0;
+        padding: 14px 12px 74px;
+        border: 0;
+        border-radius: 0;
       }}
       header {{
-        grid-template-columns: 1fr;
+        grid-template-columns: 1fr auto;
+        align-items: center;
+        gap: 10px;
       }}
       .sync {{
-        text-align: left;
+        grid-column: 1 / -1;
+        text-align: center;
         white-space: normal;
       }}
+      h1 {{
+        font-size: 24px;
+        font-family: "Segoe UI", "Noto Sans TC", sans-serif;
+      }}
+      .subtitle {{
+        display: none;
+      }}
       .stats {{
-        grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        display: grid;
+        margin: 12px 0;
+      }}
+      .stat {{
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--line);
+      }}
+      .stat:nth-child(3n) {{
+        border-right: 0;
+      }}
+      .stat:nth-last-child(-n+3) {{
+        border-bottom: 0;
+      }}
+      .stat strong {{
+        font-size: 24px;
       }}
       .toolbar {{
-        align-items: stretch;
-        flex-direction: column;
+        align-items: center;
+        flex-direction: row;
+        top: 0;
+      }}
+      .filters {{
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        padding-bottom: 2px;
+      }}
+      .filters button {{
+        flex: 0 0 auto;
       }}
       .refresh {{
-        width: 100%;
+        width: auto;
       }}
-      .table-wrap {{
-        max-height: calc(100vh - 330px);
-        min-height: 320px;
+      .workspace {{
+        display: block;
+        height: auto;
+        min-height: 0;
+        border: 0;
+        background: transparent;
+        overflow: visible;
+      }}
+      .list-pane {{
+        border-right: 0;
+      }}
+      .list-head {{
+        padding: 8px 0 10px;
+      }}
+      .task-list {{
+        max-height: none;
+        min-height: 0;
+        overflow: visible;
+        padding-right: 0;
+      }}
+      .task-card {{
+        grid-template-columns: 44px minmax(0, 1fr);
+        padding: 11px;
+        margin-bottom: 10px;
+      }}
+      .detail-panel {{
+        display: none;
+        height: auto;
+        max-height: none;
+      }}
+      .mobile-detail {{
+        display: block;
+        max-height: 320px;
+        overflow: auto;
+        margin-top: 10px;
+        padding: 10px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #fffaf0;
+      }}
+      .mobile-actions {{
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+        margin-top: 10px;
+      }}
+      .bottom-nav {{
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        z-index: 12;
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        border-top: 1px solid var(--line);
+        background: rgba(255, 253, 247, 0.96);
+      }}
+      .bottom-nav span {{
+        display: grid;
+        place-items: center;
+        min-height: 52px;
+        color: var(--muted);
+        font-size: 12px;
       }}
     }}
   </style>
@@ -2290,11 +2630,12 @@ def todos_dashboard(token: str = ""):
   <main>
     <header>
       <div>
-        <h1>To-do Dashboard</h1>
+        <div class="title-row"><span class="app-mark">✓</span><h1>To-do Dashboard</h1></div>
         <p class="subtitle">主機 FastAPI 直接讀寫 vault 的 To-do 原始檔；筆電透過 ngrok 操作，狀態會回到 LINE Bot 共用的 `tasks.md`。</p>
       </div>
       <div class="sync">
         <div id="updated-at">尚未同步</div>
+        <div><strong>來源：</strong>06_System/ToDo/tasks.md</div>
         <div id="status-line" class="status-line"></div>
       </div>
     </header>
@@ -2309,37 +2650,35 @@ def todos_dashboard(token: str = ""):
       </div>
       <button type="button" id="refresh" class="refresh">重新整理</button>
     </div>
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th class="check-col">完成</th>
-            <th class="due-col">期限</th>
-            <th class="project-col">專案</th>
-            <th>內容</th>
-            <th class="id-col">ID</th>
-            <th>狀態</th>
-            <th>更新時間</th>
-          </tr>
-        </thead>
-        <tbody id="task-body"></tbody>
-      </table>
+    <div class="workspace">
+      <section class="list-pane" aria-label="待辦清單">
+        <div class="list-head"><span id="list-count">共 0 筆待辦</span><span>依 期限 ↑ 更新時間 排序</span></div>
+        <div class="task-list" id="task-list"></div>
+      </section>
+      <aside class="detail-panel" id="detail-panel" aria-label="待辦詳細內容"></aside>
       <div id="empty" class="empty" hidden>目前沒有符合條件的待辦。</div>
     </div>
+    <nav class="bottom-nav" aria-label="手機導覽">
+      <span>☷ 清單</span><span>□ 專案</span><span>☰ 回報</span><span>⚙ 設定</span>
+    </nav>
   </main>
   <script>
     const token = {token_json};
     const state = {{
       filter: "open",
+      selectedId: "",
+      detailClosed: false,
       tasks: [],
       stats: {{}}
     }};
 
-    const taskBody = document.getElementById("task-body");
+    const taskList = document.getElementById("task-list");
+    const detailPanel = document.getElementById("detail-panel");
     const empty = document.getElementById("empty");
     const statusLine = document.getElementById("status-line");
     const updatedAt = document.getElementById("updated-at");
     const statsEl = document.getElementById("stats");
+    const listCount = document.getElementById("list-count");
 
     const escapeHtml = (value) => String(value || "").replace(/[&<>"']/g, (char) => ({{
       "&": "&amp;",
@@ -2361,37 +2700,141 @@ def todos_dashboard(token: str = ""):
 
     const renderStats = () => {{
       const items = [
-        ["未完成", state.stats.open || 0],
-        ["今日 / 逾期", state.stats.today_or_overdue || 0],
-        ["有期限", state.stats.with_due || 0],
-        ["無期限", state.stats.without_due || 0],
-        ["已完成", state.stats.done || 0],
-        ["已刪除", state.stats.deleted || 0]
+        ["☑", "未完成", state.stats.open || 0],
+        ["↯", "今日 / 逾期", state.stats.today_or_overdue || 0],
+        ["□", "有期限", state.stats.with_due || 0],
+        ["☷", "無期限", state.stats.without_due || 0],
+        ["✓", "已完成", state.stats.done || 0],
+        ["⌫", "已刪除", state.stats.deleted || 0]
       ];
-      statsEl.innerHTML = items.map(([label, value]) => `
-        <div class="stat"><span>${{escapeHtml(label)}}</span><strong>${{escapeHtml(value)}}</strong></div>
+      statsEl.innerHTML = items.map(([icon, label, value]) => `
+        <div class="stat"><span><b class="stat-icon">${{escapeHtml(icon)}}</b>${{escapeHtml(label)}}</span><strong>${{escapeHtml(value)}}</strong></div>
       `).join("");
     }};
 
+    const getFilteredTasks = () => state.tasks.filter(matchesFilter);
+    const firstLine = (value) => String(value || "").split("\\n").find((line) => line.trim()) || "未命名待辦";
+    const compactDate = (value) => {{
+      const text = String(value || "");
+      const match = text.match(/(\\d{{4}})-(\\d{{2}})-(\\d{{2}})/);
+      return match ? `${{match[2]}}/${{match[3]}}` : "無期限";
+    }};
+    const overdueText = (task) => task.is_due && task.status === "open" ? '<span class="due-chip due hot">逾期</span>' : "";
+
+    const makePreview = (task) => {{
+      const latest = task.latest_report ? `<div class="report">最近回報：${{escapeHtml(task.latest_report.content)}}</div>` : "";
+      const disabled = task.status !== "open" ? "disabled" : "";
+      const completeLabel = task.status === "done" ? "✓" : "";
+      const selected = task.id === state.selectedId ? "selected" : "";
+      const dueClass = task.is_due && task.status === "open" ? "due-chip due hot" : "due-chip due";
+      const mobileDetail = task.id === state.selectedId ? `
+        <div class="mobile-detail">
+          <div class="detail-content">${{escapeHtml(task.content)}}</div>
+          ${{latest}}
+          <div class="mobile-actions">
+            <button type="button" class="refresh" data-complete="${{escapeHtml(task.id)}}" ${{disabled}}>標記完成</button>
+            <button type="button" data-report="${{escapeHtml(task.id)}}" ${{disabled}}>加入回報</button>
+            <button type="button" data-copy="${{escapeHtml(task.id)}}">複製內容</button>
+            <button type="button" class="danger" data-delete="${{escapeHtml(task.id)}}" ${{disabled}}>刪除</button>
+          </div>
+        </div>
+      ` : "";
+      return `
+        <article class="task-card ${{escapeHtml(task.status)}} ${{selected}}" data-task-card="${{escapeHtml(task.id)}}">
+          <button type="button" class="complete-button" data-complete="${{escapeHtml(task.id)}}" ${{disabled}} aria-label="完成 ${{escapeHtml(task.id)}}">${{completeLabel}}</button>
+          <div class="task-main">
+            <div class="task-topline">
+              <div class="task-meta">
+                <span class="${{dueClass}}">${{escapeHtml(compactDate(task.due))}}</span>
+                ${{overdueText(task)}}
+                <span class="project-chip">${{escapeHtml(task.project || "未分類")}}</span>
+              </div>
+              <span class="task-id">${{escapeHtml(task.id)}}</span>
+            </div>
+            <div class="card-title">${{escapeHtml(firstLine(task.content))}}</div>
+            <div class="content">${{escapeHtml(task.content)}}</div>
+            ${{latest}}
+            <div class="task-topline">
+              <span class="task-id">${{escapeHtml(task.id)}}</span>
+              <span class="status-pill">${{escapeHtml(task.status_label)}}</span>
+            </div>
+            ${{mobileDetail}}
+          </div>
+        </article>
+      `;
+    }};
+
+    const renderDetail = (task) => {{
+      if (!task) {{
+        detailPanel.innerHTML = '<div class="detail-empty">選一筆待辦，這裡會顯示完整內容。</div>';
+        return;
+      }}
+      const disabled = task.status !== "open" ? "disabled" : "";
+      const dueClass = task.is_due && task.status === "open" ? "due-chip due hot" : "due-chip due";
+      const latestReport = task.latest_report ? `
+        <div class="report-box">
+          <div>${{escapeHtml(task.latest_report.created_at || "-")}}　${{escapeHtml(task.owner || "maintainer")}}</div>
+          <div>${{escapeHtml(task.latest_report.content)}}</div>
+        </div>
+      ` : '<div class="report-box">尚無回報</div>';
+      detailPanel.innerHTML = `
+        <div class="detail-shell">
+          <div class="detail-head">
+            <div class="detail-headline">
+              <div>
+                <div class="detail-meta">
+                  <span class="${{dueClass}}">${{escapeHtml(task.due || "無期限")}}</span>
+                  ${{overdueText(task)}}
+                  <span class="project-chip">${{escapeHtml(task.project || "未分類")}}</span>
+                  <span class="status-pill">${{escapeHtml(task.status_label)}}</span>
+                </div>
+                <div class="detail-title">${{escapeHtml(firstLine(task.content))}}</div>
+              </div>
+              <button type="button" class="icon-button" data-close-detail aria-label="關閉詳細內容">×</button>
+            </div>
+            <div class="info-grid">
+              <div class="info-cell"><span>專案</span>${{escapeHtml(task.project || "未分類")}}</div>
+              <div class="info-cell"><span>類型</span>${{escapeHtml(task.type || "-")}}</div>
+              <div class="info-cell"><span>負責人</span>${{escapeHtml(task.owner || "-")}}</div>
+              <div class="info-cell"><span>期限</span>${{escapeHtml(task.due || "無期限")}}</div>
+              <div class="info-cell"><span>來源</span>${{escapeHtml(task.source || "-")}}</div>
+            </div>
+          </div>
+          <div class="detail-body">
+            <div class="section-title">內容</div>
+            <div class="detail-content">${{escapeHtml(task.content)}}</div>
+            <div class="section-title">最新回報</div>
+            ${{latestReport}}
+            <div class="section-title">更多資訊</div>
+            <div class="more-grid">
+              <div class="info-cell"><span>建立時間</span>${{escapeHtml(task.created_at || "-")}}</div>
+              <div class="info-cell"><span>更新時間</span>${{escapeHtml(task.updated_at || "-")}}</div>
+              <div class="info-cell"><span>有無期限</span>${{task.due ? "有" : "無"}}</div>
+              <div class="info-cell"><span>回報數量</span>${{escapeHtml((task.reports || []).length)}}</div>
+            </div>
+          </div>
+          <div class="detail-actions">
+            <button type="button" class="refresh" data-complete="${{escapeHtml(task.id)}}" ${{disabled}}>標記完成</button>
+            <button type="button" data-report="${{escapeHtml(task.id)}}" ${{disabled}}>加入回報</button>
+            <button type="button" data-copy="${{escapeHtml(task.id)}}">複製內容</button>
+            <button type="button" class="danger" data-delete="${{escapeHtml(task.id)}}" ${{disabled}}>刪除</button>
+          </div>
+        </div>
+      `;
+    }};
+
     const renderTasks = () => {{
-      const rows = state.tasks.filter(matchesFilter);
-      taskBody.innerHTML = rows.map((task) => {{
-        const latest = task.latest_report ? `<div class="report">最近回報：${{escapeHtml(task.latest_report.content)}}</div>` : "";
-        const disabled = task.status !== "open" ? "disabled" : "";
-        const checked = task.status === "done" ? "checked" : "";
-        const dueClass = task.is_due && task.status === "open" ? "due hot" : "due";
-        return `
-          <tr class="${{escapeHtml(task.status)}}">
-            <td class="check-col"><input type="checkbox" data-task-id="${{escapeHtml(task.id)}}" ${{checked}} ${{disabled}} aria-label="完成 ${{escapeHtml(task.id)}}"></td>
-            <td><span class="${{dueClass}}">${{escapeHtml(task.due || "-")}}</span></td>
-            <td>${{escapeHtml(task.project || "-")}}</td>
-            <td><div class="content">${{escapeHtml(task.content)}}</div>${{latest}}</td>
-            <td class="id-col">${{escapeHtml(task.id)}}</td>
-            <td><span class="status-pill">${{escapeHtml(task.status_label)}}</span></td>
-            <td>${{escapeHtml(task.updated_at || "-")}}</td>
-          </tr>
-        `;
-      }}).join("");
+      const rows = getFilteredTasks();
+      if (rows.length && !state.detailClosed && !rows.some((task) => task.id === state.selectedId)) {{
+        state.selectedId = rows[0].id;
+      }}
+      if (!rows.length) {{
+        state.selectedId = "";
+        state.detailClosed = false;
+      }}
+      taskList.innerHTML = rows.map(makePreview).join("");
+      listCount.textContent = `共 ${{rows.length}} 筆待辦`;
+      renderDetail(state.detailClosed ? null : rows.find((task) => task.id === state.selectedId));
       empty.hidden = rows.length !== 0;
     }};
 
@@ -2400,6 +2843,13 @@ def todos_dashboard(token: str = ""):
       const content = task ? String(task.content || "").replace(/\\s+/g, " ").trim() : "";
       const preview = content.length > 48 ? content.slice(0, 47) + "..." : content;
       return `確定要將這筆待辦標記為完成？\\n\\n${{taskId}}${{preview ? "\\n" + preview : ""}}`;
+    }};
+
+    const getDeleteConfirmText = (taskId) => {{
+      const task = state.tasks.find((item) => item.id === taskId);
+      const content = task ? String(task.content || "").replace(/\\s+/g, " ").trim() : "";
+      const preview = content.length > 48 ? content.slice(0, 47) + "..." : content;
+      return `確定要刪除這筆待辦？\\n\\n${{taskId}}${{preview ? "\\n" + preview : ""}}`;
     }};
 
     const render = () => {{
@@ -2437,6 +2887,33 @@ def todos_dashboard(token: str = ""):
       await loadTodos();
     }};
 
+    const addTaskReport = async (taskId, content) => {{
+      setStatus("寫入回報中...");
+      const response = await fetch(`/api/todos/${{encodeURIComponent(taskId)}}/report?token=${{encodeURIComponent(token)}}`, {{
+        method: "POST",
+        headers: {{"Content-Type": "application/json"}},
+        body: JSON.stringify({{content}})
+      }});
+      if (!response.ok) {{
+        setStatus("回報寫入失敗，已重新整理");
+        await loadTodos();
+        return;
+      }}
+      await loadTodos();
+    }};
+
+    const copyTaskContent = async (taskId) => {{
+      const task = state.tasks.find((item) => item.id === taskId);
+      if (!task) return;
+      const text = `${{task.id}}\\n${{task.content || ""}}`;
+      try {{
+        await navigator.clipboard.writeText(text);
+        setStatus("已複製內容");
+      }} catch (error) {{
+        setStatus("複製失敗，請改用手動選取");
+      }}
+    }};
+
     document.querySelectorAll("[data-filter]").forEach((button) => {{
       button.addEventListener("click", () => {{
         state.filter = button.dataset.filter;
@@ -2445,16 +2922,60 @@ def todos_dashboard(token: str = ""):
       }});
     }});
 
-    taskBody.addEventListener("change", async (event) => {{
-      const target = event.target;
-      if (!target.matches('input[type="checkbox"][data-task-id]')) return;
-      if (target.checked && !confirm(getTaskConfirmText(target.dataset.taskId))) {{
-        target.checked = false;
+    const handleTaskAction = async (event) => {{
+      const closeButton = event.target.closest("[data-close-detail]");
+      if (closeButton) {{
+        state.selectedId = "";
+        state.detailClosed = true;
+        renderTasks();
         return;
       }}
-      target.disabled = true;
-      await setTaskStatus(target.dataset.taskId, target.checked ? "done" : "open");
-    }});
+      const selectButton = event.target.closest("[data-select]");
+      if (selectButton) {{
+        state.selectedId = selectButton.dataset.select;
+        state.detailClosed = false;
+        renderTasks();
+        return;
+      }}
+      const completeButton = event.target.closest("[data-complete]");
+      if (completeButton) {{
+        const taskId = completeButton.dataset.complete;
+        if (!confirm(getTaskConfirmText(taskId))) return;
+        completeButton.disabled = true;
+        await setTaskStatus(taskId, "done");
+        return;
+      }}
+      const reportButton = event.target.closest("[data-report]");
+      if (reportButton) {{
+        const taskId = reportButton.dataset.report;
+        const content = prompt("輸入這筆待辦的回報內容");
+        if (!content || !content.trim()) return;
+        reportButton.disabled = true;
+        await addTaskReport(taskId, content.trim());
+        return;
+      }}
+      const copyButton = event.target.closest("[data-copy]");
+      if (copyButton) {{
+        await copyTaskContent(copyButton.dataset.copy);
+        return;
+      }}
+      const deleteButton = event.target.closest("[data-delete]");
+      if (deleteButton) {{
+        const taskId = deleteButton.dataset.delete;
+        if (!confirm(getDeleteConfirmText(taskId))) return;
+        deleteButton.disabled = true;
+        await setTaskStatus(taskId, "deleted");
+        return;
+      }}
+      const card = event.target.closest("[data-task-card]");
+      if (!card) return;
+      state.selectedId = card.dataset.taskCard;
+      state.detailClosed = false;
+      renderTasks();
+    }};
+
+    taskList.addEventListener("click", handleTaskAction);
+    detailPanel.addEventListener("click", handleTaskAction);
 
     document.getElementById("refresh").addEventListener("click", loadTodos);
     loadTodos();

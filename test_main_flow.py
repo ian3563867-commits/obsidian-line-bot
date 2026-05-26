@@ -597,7 +597,17 @@ def run():
     assert dashboard_response.status_code == 200
     assert "To-do Dashboard" in dashboard_response.text
     assert "確定要將這筆待辦標記為完成" in dashboard_response.text
-    assert "max-height: calc(100vh - 280px)" in dashboard_response.text
+    assert "確定要刪除這筆待辦" in dashboard_response.text
+    assert "data-delete" in dashboard_response.text
+    assert "data-report" in dashboard_response.text
+    assert "data-copy" in dashboard_response.text
+    assert "class=\"workspace\"" in dashboard_response.text
+    assert "class=\"task-list\"" in dashboard_response.text
+    assert "class=\"detail-panel\"" in dashboard_response.text
+    assert "max-height: calc(100vh - 326px)" in dashboard_response.text
+    assert "max-height: calc(100vh - 126px)" in dashboard_response.text
+    assert "overflow: visible" in dashboard_response.text
+    assert "min-height: 382px" not in dashboard_response.text
     assert "overflow: auto" in dashboard_response.text
     assert "position: sticky" in dashboard_response.text
     invalid_status_response = client.post(
@@ -616,6 +626,18 @@ def run():
     )
     assert done_from_dashboard.status_code == 200
     assert main.find_todo_task(second_task_id)["status"] == "done"
+    deleted_from_dashboard = client.post(
+        f"/api/todos/{second_task_id}/status?token=todo-dashboard-secret",
+        json={"status": "deleted"},
+    )
+    assert deleted_from_dashboard.status_code == 200
+    assert main.find_todo_task(second_task_id)["status"] == "deleted"
+    report_from_dashboard = client.post(
+        f"/api/todos/{second_task_id}/report?token=todo-dashboard-secret",
+        json={"content": "Dashboard 補充回報"},
+    )
+    assert report_from_dashboard.status_code == 200
+    assert main.find_todo_task(second_task_id)["reports"][-1]["content"] == "Dashboard 補充回報"
     send_event(
         client,
         {
