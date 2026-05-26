@@ -38,6 +38,17 @@ GENERIC_PROJECT_TERMS = {
     "常用sql",
 }
 
+LIFE_MATCH_IGNORED_TERMS = GENERIC_PROJECT_TERMS | {
+    "line",
+    "bot",
+    "linebot",
+    "fastapi",
+    "security",
+    "ai",
+    "9002",
+    "9002-vaultlinebot",
+}
+
 PROJECT_CONTEXT_TERMS = ("SampleProjectB", "SampleProjectA", "SampleProjectC", "SampleProjectD", "SampleProjectE", "SampleProjectF")
 
 TIME_SENSITIVE_TERMS = (
@@ -482,6 +493,12 @@ def _strict_life_match(query: str, record: dict) -> bool:
     units.extend(record.get("aliases") or [])
     for unit in units:
         normalized = str(unit).strip().lower()
+        if normalized in LIFE_MATCH_IGNORED_TERMS:
+            continue
+        if re.fullmatch(r"[a-z0-9_-]+", normalized):
+            if re.search(rf"(?<![a-z0-9_-]){re.escape(normalized)}(?![a-z0-9_-])", query_lower):
+                return True
+            continue
         if len(normalized) >= 2 and normalized in query_lower:
             return True
     return False
