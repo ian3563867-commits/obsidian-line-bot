@@ -2221,14 +2221,18 @@ def todos_dashboard(token: str = ""):
       display: grid;
       grid-template-columns: minmax(340px, 0.9fr) minmax(420px, 1.1fr);
       gap: 0;
+      height: calc(100vh - 126px);
       border: 1px solid var(--line);
       border-radius: 8px;
       background: rgba(255, 253, 247, 0.70);
-      overflow: visible;
+      overflow: hidden;
     }}
     .list-pane {{
       min-width: 0;
       border-right: 1px solid var(--line);
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
     }}
     .list-head {{
       display: flex;
@@ -2242,7 +2246,8 @@ def todos_dashboard(token: str = ""):
       display: flex;
       flex-direction: column;
       gap: 10px;
-      max-height: calc(100vh - 326px);
+      flex: 1 1 auto;
+      min-height: 0;
       overflow: auto;
       padding: 0 10px 16px;
     }}
@@ -2362,7 +2367,8 @@ def todos_dashboard(token: str = ""):
       position: sticky;
       top: 74px;
       align-self: start;
-      max-height: calc(100vh - 126px);
+      height: 100%;
+      max-height: none;
       min-height: 0;
       border: 0;
       border-radius: 0;
@@ -2373,7 +2379,8 @@ def todos_dashboard(token: str = ""):
     .detail-shell {{
       display: flex;
       flex-direction: column;
-      max-height: calc(100vh - 126px);
+      height: 100%;
+      max-height: none;
       min-height: 0;
     }}
     .detail-head {{
