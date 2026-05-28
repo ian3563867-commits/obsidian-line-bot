@@ -432,31 +432,26 @@ def build_candidate_file_hint(path: str, toc_entry: TocEntry | None) -> SourceBl
 
 def _manifest_precheck(query: str, vault_dir: str, max_blocks: int) -> PrecheckResult | None:
     life_candidates = []
+    life_scored_candidates = []
     candidates = []
     for record in read_manifest(vault_dir):
+        haystack = _manifest_search_text(record)
         if record.get("life"):
-            if not _strict_life_match(query, record):
+            score = _score_text(query, haystack)
+            if _strict_life_match(query, record):
+                life_candidates.append((100 + score, record))
                 continue
-            life_candidates.append((100, record))
+            if score >= 6:
+                life_scored_candidates.append((score, record))
             continue
         else:
-            haystack = " ".join(
-                [
-                    str(record.get("path", "")),
-                    str(record.get("title", "")),
-                    str(record.get("project", "")),
-                    " ".join(record.get("tags") or []),
-                    " ".join(record.get("aliases") or []),
-                    " ".join(record.get("headings") or []),
-                ]
-            )
             score = _score_text(query, haystack)
             if score <= 0:
                 continue
         candidates.append((score, record))
 
     if life_candidates:
-        candidates = life_candidates
+        candidates = _merge_life_manifest_candidates(life_candidates, life_scored_candidates, max_blocks)
     if not candidates:
         return None
 
@@ -502,6 +497,44 @@ def _strict_life_match(query: str, record: dict) -> bool:
         if len(normalized) >= 2 and normalized in query_lower:
             return True
     return False
+
+
+def _merge_life_manifest_candidates(
+    strict_candidates: list[tuple[int, dict]],
+    scored_candidates: list[tuple[int, dict]],
+    max_blocks: int,
+) -> list[tuple[int, dict]]:
+    merged: list[tuple[int, dict]] = []
+    seen_paths = set()
+    for score, record in sorted(strict_candidates, key=lambda item: (-item[0], str(item[1].get("path", "")))):
+        path = str(record.get("path", ""))
+        if path in seen_paths:
+            continue
+        seen_paths.add(path)
+        merged.append((score, record))
+
+    for score, record in sorted(scored_candidates, key=lambda item: (-item[0], str(item[1].get("path", "")))):
+        if len(merged) >= max_blocks:
+            break
+        path = str(record.get("path", ""))
+        if path in seen_paths:
+            continue
+        seen_paths.add(path)
+        merged.append((score, record))
+    return merged
+
+
+def _manifest_search_text(record: dict) -> str:
+    return " ".join(
+        [
+            str(record.get("path", "")),
+            str(record.get("title", "")),
+            str(record.get("project", "")),
+            " ".join(record.get("tags") or []),
+            " ".join(record.get("aliases") or []),
+            " ".join(record.get("headings") or []),
+        ]
+    )
 
 
 def strip_markdown_inline(text: str) -> str:
