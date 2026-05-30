@@ -18,7 +18,7 @@ def _split_args(value: str) -> list[str]:
 
 def _build_cmd() -> list[str]:
     codex_exe = os.environ.get("CODEX_EXE", "codex")
-    codex_args = os.environ.get("CODEX_ARGS", "exec --sandbox workspace-write -")
+    codex_args = os.environ.get("CODEX_ARGS", "exec --skip-git-repo-check --sandbox workspace-write -")
     return [codex_exe, *_split_args(codex_args)]
 
 

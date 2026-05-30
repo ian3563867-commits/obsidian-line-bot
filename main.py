@@ -151,6 +151,13 @@ def ask_agent(prompt: str, allow_write: bool = False, life_override: bool = Fals
     return f"未知 AGENT_BACKEND={AGENT_BACKEND}，請設定為 claude 或 codex。"
 
 
+def agent_backend_label() -> str:
+    return {
+        "claude": "Claude",
+        "codex": "Codex",
+    }.get(AGENT_BACKEND, AGENT_BACKEND or "Agent")
+
+
 def call_ask_agent(prompt: str, allow_write: bool = False, life_override: bool = False) -> str:
     try:
         return ask_agent(prompt, allow_write=allow_write, life_override=life_override)
@@ -160,7 +167,7 @@ def call_ask_agent(prompt: str, allow_write: bool = False, life_override: bool =
         return ask_agent(prompt, allow_write=allow_write)
 
 
-def answer_query(prompt: str) -> tuple[str, str]:
+def answer_query(prompt: str, progress_callback=None) -> tuple[str, str]:
     precheck = run_precheck(prompt, VAULT_DIR)
     if precheck.hit:
         log_debug(
@@ -168,6 +175,8 @@ def answer_query(prompt: str) -> tuple[str, str]:
             f"mode={precheck.mode} life_override={precheck.life_override} "
             f"blocks={len(precheck.source_blocks)} entries={len(precheck.matched_entries)}"
         )
+        if progress_callback:
+            progress_callback("precheck", precheck)
         source = "manifest" if precheck.mode == "manifest_candidates" else "precheck"
         return (
             call_ask_agent(
@@ -182,14 +191,20 @@ def answer_query(prompt: str) -> tuple[str, str]:
             f"[PRECHECK CANDIDATES] prompt={prompt[:80]!r} "
             f"entries={len(precheck.matched_entries)} reason={precheck.fallback_reason}"
         )
+        if progress_callback:
+            progress_callback("candidate_search", precheck)
         return call_ask_agent(build_candidate_search_prompt(prompt, precheck), allow_write=False), "candidate_search"
     if precheck.mode == "index_hints":
         log_debug(
             f"[PRECHECK HINTS] prompt={prompt[:80]!r} "
             f"entries={len(precheck.matched_entries)} reason={precheck.fallback_reason}"
         )
+        if progress_callback:
+            progress_callback("index_hints", precheck)
         return call_ask_agent(build_index_hint_prompt(prompt, precheck), allow_write=False), "index_hints"
     log_debug(f"[PRECHECK FALLBACK] prompt={prompt[:80]!r} reason={precheck.fallback_reason}")
+    if progress_callback:
+        progress_callback("fallback", precheck)
     return call_ask_agent(prompt, allow_write=False), "fallback"
 
 
@@ -374,7 +389,13 @@ def make_answer_page(kind: str, prompt: str) -> str:
     suffix = int(time.time() * 1000) % 100000
     filename = f"{timestamp.strftime('%Y%m%d-%H%M%S')}-{kind}-{suffix:05d}.md"
     path = os.path.join(ANSWER_PAGES_DIR, filename)
-    write_answer_page(path, kind, prompt, "處理中", "Claude 正在整理答案，請稍後重新整理此頁。")
+    write_answer_page(
+        path,
+        kind,
+        prompt,
+        "處理中",
+        f"{agent_backend_label()} 正在查詢 vault 並整理答案；此頁會自動更新完成內容。",
+    )
     return path
 
 
@@ -404,6 +425,75 @@ project: 通用
 """
     with open(path, "w", encoding="utf-8") as f:
         f.write(content)
+
+
+def build_query_progress_payload(route: str, precheck, started_at: float) -> dict:
+    agent_label = agent_backend_label()
+    route_labels = {
+        "precheck": "precheck 強命中",
+        "candidate_search": "candidate_search 候選搜尋",
+        "index_hints": "index_hints 低信心提示",
+        "fallback": "fallback 深度搜尋",
+    }
+    route_descriptions = {
+        "precheck": f"Python 已明確命中候選來源，{agent_label} 會在縮小後的來源範圍內整理答案。",
+        "candidate_search": f"Python 找到多個可能入口但不硬猜，{agent_label} 會先在候選範圍內比較再回答。",
+        "index_hints": f"index 有相關線索但不夠確定，{agent_label} 會先讀提示來源，不足時再依規則補搜尋。",
+        "fallback": f"Python 沒找到可信入口，{agent_label} 會走原本的保守 deep search。",
+    }
+    now = datetime.now().strftime("%H:%M:%S")
+    elapsed = max(0, int(time.time() - started_at))
+    mode = getattr(precheck, "mode", "")
+    confidence = getattr(precheck, "confidence", "")
+    reason = getattr(precheck, "fallback_reason", "")
+    sources = []
+    source_blocks = list(getattr(precheck, "source_blocks", []) or [])
+    matched_entries = list(getattr(precheck, "matched_entries", []) or [])
+    if source_blocks:
+        for block in source_blocks[:5]:
+            sources.append(
+                {
+                    "kind": "source",
+                    "path": block.file,
+                    "summary": getattr(block, "match_reason", "") or "",
+                }
+            )
+    elif matched_entries:
+        for entry in matched_entries[:5]:
+            page = entry.get("page") or entry.get("title") or "-"
+            summary = entry.get("summary") or ""
+            sources.append({"kind": "entry", "path": page, "summary": summary})
+
+    return {
+        "route": route,
+        "backend_label": agent_label,
+        "route_label": route_labels.get(route, route),
+        "mode": mode or None,
+        "confidence": confidence or None,
+        "reason": reason or None,
+        "description": route_descriptions.get(route, "正在依目前路由整理答案。"),
+        "sources": sources,
+        "events": [
+            {"time": now, "text": "已完成 deterministic pre-check"},
+            {"time": now, "text": f"查詢路由：{route_labels.get(route, route)}"},
+            {"time": now, "text": f"已交給 {agent_label} 整理正式答案"},
+        ],
+        "elapsed_seconds": elapsed,
+        "next_step": f"已交給 {agent_label} 整理正式答案。",
+    }
+
+
+def format_query_progress_body(route: str, precheck, started_at: float) -> str:
+    progress = build_query_progress_payload(route, precheck, started_at)
+    return "\n".join(
+        [
+            f"{agent_backend_label()} 正在查詢 vault 並整理答案；此頁會自動更新完成內容。",
+            "",
+            "<!-- result-progress",
+            json.dumps(progress, ensure_ascii=False),
+            "-->",
+        ]
+    )
 
 
 def now_text() -> str:
@@ -3541,6 +3631,30 @@ def _is_result_page(normalized_path: str) -> bool:
         return False
 
 
+_RESULT_STATUS_RE = re.compile(r"^狀態：\s*(\S+)", re.M)
+_RESULT_PROGRESS_RE = re.compile(r"<!--\s*result-progress\s*(.*?)\s*-->", re.S)
+
+
+def _extract_result_status(body: str) -> str | None:
+    m = _RESULT_STATUS_RE.search(body)
+    return m.group(1).strip() if m else None
+
+
+def _extract_result_progress(body: str) -> dict | None:
+    m = _RESULT_PROGRESS_RE.search(body)
+    if not m:
+        return None
+    try:
+        progress = json.loads(m.group(1))
+    except json.JSONDecodeError:
+        return None
+    return progress if isinstance(progress, dict) else None
+
+
+def _strip_result_progress(body: str) -> str:
+    return _RESULT_PROGRESS_RE.sub("", body).strip()
+
+
 @app.get("/api/note")
 def api_note(file: str, exp: int = 0, sig: str = ""):
     verify_open_note_signature(file, exp, sig)
@@ -3548,9 +3662,12 @@ def api_note(file: str, exp: int = 0, sig: str = ""):
     with open(target_path, "r", encoding="utf-8") as f:
         content = f.read()
     meta, body = parse_frontmatter(content)
+    filename = os.path.basename(target_path)
+    kind = "result" if _is_result_page(normalized) else "note"
+    progress = _extract_result_progress(body) if kind == "result" else None
+    body = _strip_result_progress(body) if progress else body
     body = auto_fence_json_blocks(body)
     body = rewrite_vault_md_links(body, exp)
-    filename = os.path.basename(target_path)
 
     title = meta.get("title") or os.path.splitext(filename)[0]
     h1 = re.search(r"^#\s+(.+)$", body, re.M)
@@ -3561,8 +3678,8 @@ def api_note(file: str, exp: int = 0, sig: str = ""):
     project = meta.get("project") if isinstance(meta.get("project"), str) else None
     updated = meta.get("updated") or meta.get("date")
 
-    kind = "result" if _is_result_page(normalized) else "note"
     query_meta = extract_query_meta_from_result(body, filename) if kind == "result" else None
+    status = _extract_result_status(body) if kind == "result" else None
 
     back_to_line_url = None
     if LINE_BOT_BASIC_ID:
@@ -3579,6 +3696,8 @@ def api_note(file: str, exp: int = 0, sig: str = ""):
             "query_meta": query_meta,
             "markdown": body,
             "kind": kind,
+            "status": status,
+            "progress": progress,
             "back_to_line_url": back_to_line_url,
         }
     )
@@ -3914,8 +4033,15 @@ def run_agent_and_push(user_id: str, prompt: str):
 def run_agent_to_page(user_id: str, prompt: str, page_path: str):
     start = time.time()
     log_debug(f"[AGENT PAGE START] user={user_id} backend={AGENT_BACKEND} page={page_path} prompt={prompt[:80]!r}")
+
+    def update_progress(route: str, precheck):
+        try:
+            write_answer_page(page_path, "query", prompt, "處理中", format_query_progress_body(route, precheck, start))
+        except Exception as progress_error:
+            log_debug(f"[AGENT PAGE PROGRESS ERROR] user={user_id} route={route} error={progress_error}")
+
     try:
-        answer, answer_source = answer_query(prompt)
+        answer, answer_source = answer_query(prompt, progress_callback=update_progress)
         log_debug(
             f"[AGENT PAGE DONE] user={user_id} elapsed={time.time() - start:.1f}s "
             f"source={answer_source} answer_len={len(answer or '')}"
