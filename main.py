@@ -16,7 +16,8 @@ import markdown
 import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
 
 from ask_claude import ask_claude
 from ask_codex import ask_codex
@@ -36,6 +37,7 @@ OBSIDIAN_VAULT_NAME = os.environ.get("OBSIDIAN_VAULT_NAME", os.path.basename(VAU
 OPEN_NOTE_BASE_URL = os.environ.get("OPEN_NOTE_BASE_URL", "").rstrip("/")
 OPEN_NOTE_TOKEN = os.environ.get("OPEN_NOTE_TOKEN", "").strip()
 OPEN_NOTE_TTL_SECONDS = int(os.environ.get("OPEN_NOTE_TTL_SECONDS", "1800"))
+LINE_BOT_BASIC_ID = os.environ.get("LINE_BOT_BASIC_ID", "").strip()
 OPEN_NOTE_RESULT_TTL_SECONDS = int(os.environ.get("OPEN_NOTE_RESULT_TTL_SECONDS", "0"))
 ANSWER_PAGES_DIR = os.environ.get(
     "ANSWER_PAGES_DIR",
@@ -70,6 +72,17 @@ CARD_ACCENT_DARK = "#048F3D"
 CARD_FOOTER_BG = "#F1F7EF"
 
 app = FastAPI()
+
+READER_DIST_DIR = os.path.join(os.path.dirname(__file__), "frontend", "dist")
+READER_INDEX_HTML = os.path.join(READER_DIST_DIR, "index.html")
+if os.path.isdir(READER_DIST_DIR):
+    app.mount(
+        "/static/reader",
+        StaticFiles(directory=READER_DIST_DIR),
+        name="reader",
+    )
+else:
+    print(f"[WARN] Reader bundle not found at {READER_DIST_DIR}; /open-note will fallback to inline rendering.")
 
 
 def log_debug(message: str):
@@ -1257,6 +1270,105 @@ def strip_frontmatter(content: str) -> str:
         if end != -1:
             return content[end + 4 :].lstrip()
     return content
+
+
+def parse_frontmatter(content: str) -> tuple[dict, str]:
+    """Return (meta dict, body without frontmatter). Minimal YAML — only top-level scalars + simple [..] arrays."""
+    if not content.startswith("---\n"):
+        return {}, content
+    end = content.find("\n---", 4)
+    if end == -1:
+        return {}, content
+    raw = content[4:end]
+    body = content[end + 4 :].lstrip()
+    meta: dict = {}
+    for line in raw.splitlines():
+        if not line or line.startswith("#") or ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            continue
+        if value.startswith("[") and value.endswith("]"):
+            inner = value[1:-1].strip()
+            if not inner:
+                meta[key] = []
+            else:
+                meta[key] = [
+                    item.strip().strip("'\"")
+                    for item in inner.split(",")
+                    if item.strip()
+                ]
+        elif value:
+            meta[key] = value.strip("'\"")
+        else:
+            meta[key] = None
+    return meta, body
+
+
+_MD_LINK_RE = re.compile(r'(\[[^\]]+\])\(([^)\s]+\.md)(\s+"[^"]*")?\)')
+
+
+def rewrite_vault_md_links(body: str, exp: int) -> str:
+    """Rewrite markdown links pointing to vault .md files into signed /open-note URLs.
+
+    - Skips fenced code blocks.
+    - Skips absolute URLs (http/https/mailto) and already-signed /open-note links.
+    - Strips link wrapping for paths that don't exist in vault (becomes plain text + hint),
+      so users don't click into a 404.
+    """
+    from urllib.parse import unquote
+
+    vault_root = os.path.abspath(VAULT_DIR)
+
+    def _rewrite_one(match: "re.Match") -> str:
+        text_with_brackets = match.group(1)
+        raw_href = match.group(2).strip()
+        if (
+            raw_href.startswith(("http://", "https://", "mailto:", "tel:", "#"))
+            or raw_href.startswith("/")
+        ):
+            return match.group(0)
+        try:
+            decoded = unquote(raw_href).replace("\\", "/").lstrip("/")
+        except Exception:
+            return text_with_brackets[1:-1]
+        decoded = decoded.split("#")[0].split("?")[0]
+        target_abs = os.path.abspath(os.path.join(VAULT_DIR, decoded))
+        if not target_abs.startswith(vault_root + os.sep):
+            return text_with_brackets[1:-1]
+        if not os.path.isfile(target_abs):
+            return f"{text_with_brackets[1:-1]} _(找不到此筆記)_"
+        new_sig = sign_open_note(decoded, exp)
+        qs = urlencode({"file": decoded, "exp": exp, "sig": new_sig})
+        return f"{text_with_brackets}(/open-note?{qs})"
+
+    out: list[str] = []
+    in_fence = False
+    for line in body.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_fence = not in_fence
+            out.append(line)
+            continue
+        if in_fence:
+            out.append(line)
+            continue
+        out.append(_MD_LINK_RE.sub(_rewrite_one, line))
+    return "\n".join(out)
+
+
+def extract_query_meta_from_result(body: str, filename: str) -> dict:
+    """Best-effort: parse '原始輸入' section from LineBotResults markdown."""
+    meta: dict = {"query_id": os.path.splitext(filename)[0]}
+    m = re.search(r"^##\s*原始輸入\s*\n+(.+?)(?=\n##\s|\Z)", body, re.S | re.M)
+    if m:
+        meta["raw_input"] = m.group(1).strip()
+    status_m = re.search(r"^狀態[:：]\s*(.+)$", body, re.M)
+    if status_m:
+        meta["query_type"] = status_m.group(1).strip()
+    return meta
 
 
 def auto_fence_json_blocks(content: str) -> str:
@@ -3407,9 +3519,7 @@ def discussion_page(discussion_id: str):
     )
 
 
-@app.get("/open-note")
-def open_note(file: str, exp: int = 0, sig: str = ""):
-    verify_open_note_signature(file, exp, sig)
+def _resolve_note_path(file: str) -> tuple[str, str]:
     normalized = file.replace("\\", "/").lstrip("/")
     target_path = os.path.abspath(os.path.join(VAULT_DIR, normalized))
     vault_root = os.path.abspath(VAULT_DIR)
@@ -3417,9 +3527,96 @@ def open_note(file: str, exp: int = 0, sig: str = ""):
         raise HTTPException(status_code=400, detail="Invalid file path")
     if not os.path.isfile(target_path):
         raise HTTPException(status_code=404, detail="Note not found")
+    return normalized, target_path
+
+
+def _is_result_page(normalized_path: str) -> bool:
+    try:
+        rel = os.path.relpath(
+            os.path.abspath(os.path.join(VAULT_DIR, normalized_path)),
+            os.path.abspath(ANSWER_PAGES_DIR),
+        )
+        return not rel.startswith("..") and os.sep not in rel
+    except ValueError:
+        return False
+
+
+@app.get("/api/note")
+def api_note(file: str, exp: int = 0, sig: str = ""):
+    verify_open_note_signature(file, exp, sig)
+    normalized, target_path = _resolve_note_path(file)
     with open(target_path, "r", encoding="utf-8") as f:
         content = f.read()
+    meta, body = parse_frontmatter(content)
+    body = auto_fence_json_blocks(body)
+    body = rewrite_vault_md_links(body, exp)
+    filename = os.path.basename(target_path)
+
+    title = meta.get("title") or os.path.splitext(filename)[0]
+    h1 = re.search(r"^#\s+(.+)$", body, re.M)
+    if not meta.get("title") and h1:
+        title = h1.group(1).strip()
+
+    tags = meta.get("tags") if isinstance(meta.get("tags"), list) else None
+    project = meta.get("project") if isinstance(meta.get("project"), str) else None
+    updated = meta.get("updated") or meta.get("date")
+
+    kind = "result" if _is_result_page(normalized) else "note"
+    query_meta = extract_query_meta_from_result(body, filename) if kind == "result" else None
+
+    back_to_line_url = None
+    if LINE_BOT_BASIC_ID:
+        bot_id = LINE_BOT_BASIC_ID.lstrip("@")
+        back_to_line_url = f"https://line.me/R/ti/p/%40{bot_id}"
+
+    return JSONResponse(
+        {
+            "title": title,
+            "path": normalized,
+            "updated": updated,
+            "tags": tags,
+            "project": project,
+            "query_meta": query_meta,
+            "markdown": body,
+            "kind": kind,
+            "back_to_line_url": back_to_line_url,
+        }
+    )
+
+
+def _serve_reader_shell(file: str, exp: int, sig: str, title: str) -> HTMLResponse:
+    api_qs = urlencode({"file": file, "exp": exp, "sig": sig})
+    api_url = f"/api/note?{api_qs}"
+    # Read built index.html and inject data-api + title
+    try:
+        with open(READER_INDEX_HTML, "r", encoding="utf-8") as f:
+            html_doc = f.read()
+    except OSError:
+        raise HTTPException(status_code=500, detail="Reader bundle unreadable")
+    html_doc = html_doc.replace(
+        'data-api=""', f'data-api="{html.escape(api_url, quote=True)}"', 1
+    )
+    html_doc = re.sub(
+        r"<title>.*?</title>",
+        f"<title>{html.escape(title)}</title>",
+        html_doc,
+        count=1,
+    )
+    return HTMLResponse(html_doc)
+
+
+@app.get("/open-note")
+def open_note(file: str, exp: int = 0, sig: str = ""):
+    verify_open_note_signature(file, exp, sig)
+    normalized, target_path = _resolve_note_path(file)
     title = os.path.splitext(os.path.basename(target_path))[0]
+
+    if os.path.isfile(READER_INDEX_HTML):
+        return _serve_reader_shell(file, exp, sig, title)
+
+    # Fallback: legacy inline rendering
+    with open(target_path, "r", encoding="utf-8") as f:
+        content = f.read()
     escaped_title = html.escape(title)
     escaped_file = html.escape(normalized)
     rendered_content = render_markdown(content)

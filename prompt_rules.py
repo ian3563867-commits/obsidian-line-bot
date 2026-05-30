@@ -105,10 +105,17 @@ def build_vault_prompt(prompt: str, allow_write: bool = False, life_override: bo
         )
 
     format_rule = (
-        "【回覆格式】純文字，不要用 Markdown（不用 **粗體**、不用表格、不用 # 標題）。"
-        "用「─」分隔區塊、用「•」列點、欄位用「：」對齊。"
-        "因為訊息會顯示在 LINE，Markdown 不會渲染。\n"
-        "若使用者查詢 MSG、JSON、API、SQL、模板或範例，必須完整保留命中的連續程式碼/JSON區塊，"
+        "【回覆格式】請使用標準 Markdown 語法輸出，回答會顯示在專屬閱讀頁（會完整渲染 Markdown）。\n"
+        "- 章節用 `## 標題`、子段用 `### 子標題`；不要用「─」這類橫線字元假裝分隔。\n"
+        "- 列點用 `- 項目`（破折號 + 空格）；不要用「•」字元。\n"
+        "- 強調用 `**粗體**`；表格可用 GFM `| 欄 | 欄 |` 語法。\n"
+        "- 欄位對照可用粗體 key：`- **狀態**：OPEN`。\n"
+        "- 來源清單一律 `- [檔名](相對路徑)`，路徑用正斜線。\n"
+        "  **路徑必須是你在這次回答中實際用 Read 工具讀過的檔案完整 vault 相對路徑**，"
+        "不可從 index 摘要、記憶或常識猜測；不可省略或改寫資料夾名（例如 `0151-SampleProjectC-Site1` 不能簡稱為 `0151-SampleProjectC-Site1`）；"
+        "不可自行更換資料夾（例如 `02_Projects/...` 不可改寫成 `04_Knowledge/...`）。"
+        "若你沒有實際 Read 過該檔案，就不要把它列為來源。\n"
+        "若使用者查詢 MSG、JSON、API、SQL、模板或範例，必須完整保留命中的連續程式碼/JSON 區塊，"
         "不可只摘要 EventID 或省略 Header、Body、KeepData、欄位清單；若同一檔案有多個相關模板，需逐一完整列出。\n"
         "MSG、JSON、API payload、SQL、指令或程式碼必須使用 Markdown fenced code block 包起來，"
         "例如 ```json、```sql 或 ```text，方便結果頁排版與複製。\n\n"
