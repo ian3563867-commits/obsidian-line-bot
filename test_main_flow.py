@@ -488,6 +488,7 @@ def run():
     created_task = main.load_todo_tasks()[0]
     task_id = created_task["id"]
     assert created_task["project"] == "0188-SampleProjectA"
+    assert created_task["owner"] == "maintainer"
     assert CALLS[-1]["json"]["messages"][0]["altText"].startswith("待辦已建立")
 
     send_event(
@@ -565,6 +566,13 @@ def run():
         },
     )
     assert main.find_todo_task(task_id)["status"] == "done"
+    with open(todo_path, "r", encoding="utf-8") as f:
+        active_todo_content = f.read()
+    assert task_id not in active_todo_content
+    history_path = main.get_todo_history_path(datetime.now().year)
+    with open(history_path, "r", encoding="utf-8") as f:
+        history_todo_content = f.read()
+    assert task_id in history_todo_content
     send_event(
         client,
         {
@@ -592,7 +600,9 @@ def run():
     assert todos_response.status_code == 200
     todos_data = todos_response.json()
     assert todos_data["stats"]["open"] == 1
+    assert todos_data["stats"]["done"] == 1
     assert any(task["id"] == second_task_id for task in todos_data["tasks"])
+    assert any(task["id"] == task_id and task["status"] == "done" for task in todos_data["tasks"])
     dashboard_response = client.get("/todos?token=todo-dashboard-secret")
     assert dashboard_response.status_code == 200
     assert "To-do Dashboard" in dashboard_response.text
@@ -604,8 +614,8 @@ def run():
     assert "class=\"workspace\"" in dashboard_response.text
     assert "class=\"task-list\"" in dashboard_response.text
     assert "class=\"detail-panel\"" in dashboard_response.text
-    assert "max-height: calc(100vh - 326px)" in dashboard_response.text
-    assert "max-height: calc(100vh - 126px)" in dashboard_response.text
+    assert "height: calc(100vh - 126px)" in dashboard_response.text
+    assert "max-height: none" in dashboard_response.text
     assert "overflow: visible" in dashboard_response.text
     assert "min-height: 382px" not in dashboard_response.text
     assert "overflow: auto" in dashboard_response.text
@@ -649,12 +659,16 @@ def run():
     )
     assert main.find_todo_task(second_task_id)["status"] == "deleted"
     with open(todo_path, "r", encoding="utf-8") as f:
+        assert second_task_id not in f.read()
+    with open(history_path, "r", encoding="utf-8") as f:
         assert second_task_id in f.read()
 
     assert main.parse_todo_due("本週整理規格") == (datetime.now().date() + main.timedelta(days=6 - datetime.now().date().weekday())).isoformat()
     assert main.parse_todo_due("下週提醒 Mark") == (datetime.now().date() + main.timedelta(days=13 - datetime.now().date().weekday())).isoformat()
     assert main.parse_todo_due("5/30 前確認") != ""
     assert main.parse_todo_due("2026/06/01 前確認") == "2026-06-01"
+    assert main.parse_todo_due("周三下班前完成") == (datetime.now().date() + main.timedelta(days=(2 - datetime.now().date().weekday()) % 7)).isoformat()
+    assert main.parse_todo_owner("owner john\nSampleProjectA專案\n周三下班前完成") == "john"
 
     bulk_tasks = main.load_todo_tasks()
     today = datetime.now().date().isoformat()

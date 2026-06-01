@@ -504,6 +504,14 @@ def get_todo_tasks_path() -> str:
     return TODO_TASKS_PATH or os.path.join(VAULT_DIR, "06_System", "ToDo", "tasks.md")
 
 
+def get_todo_archive_dir() -> str:
+    return os.path.dirname(get_todo_tasks_path())
+
+
+def get_todo_history_path(year: str | int) -> str:
+    return os.path.join(get_todo_archive_dir(), f"history-{year}.md")
+
+
 def escape_markdown_table_cell(value: str) -> str:
     return str(value or "").replace("\\", "\\\\").replace("|", "\\|").replace("\r", " ").replace("\n", "<br>")
 
@@ -518,6 +526,12 @@ def todo_content_preview(content: str, limit: int = 42) -> str:
 def get_todo_dashboard_url_hint() -> str:
     base_url = OPEN_NOTE_BASE_URL or LAST_REQUEST_BASE_URL.rstrip("/")
     if not base_url:
+        path = get_todo_tasks_path()
+        if os.path.isfile(path):
+            with open(path, "r", encoding="utf-8") as f:
+                match = re.search(r"- Dashboard：`(https?://[^`]+)`", f.read())
+            if match:
+                return match.group(1)
         return "/todos?token=<TODO_DASHBOARD_TOKEN>"
     return base_url + "/todos?token=<TODO_DASHBOARD_TOKEN>"
 
@@ -536,12 +550,35 @@ project: 9002-VaultLINEBot
 """.format(date=datetime.now().strftime("%Y-%m-%d"))
 
 
+def todo_history_empty_file_content(year: str | int) -> str:
+    return """---
+title: LINE Bot To-do History {year}
+date: {date}
+tags: [LINEBot, ToDo, System, History]
+project: 9002-VaultLINEBot
+---
+
+# LINE Bot To-do History {year}
+
+此檔由 LINE Bot To-do 功能維護，存放已完成與已刪除任務，請避免手動重排任務區塊。
+""".format(year=year, date=datetime.now().strftime("%Y-%m-%d"))
+
+
 def ensure_todo_tasks_file() -> str:
     path = get_todo_tasks_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
     if not os.path.isfile(path):
         with open(path, "w", encoding="utf-8") as f:
             f.write(todo_empty_file_content())
+    return path
+
+
+def ensure_todo_history_file(year: str | int) -> str:
+    path = get_todo_history_path(year)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    if not os.path.isfile(path):
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(todo_history_empty_file_content(year))
     return path
 
 
@@ -577,8 +614,7 @@ def parse_todo_task_block(task_id: str, block: str) -> dict:
     return task
 
 
-def load_todo_tasks() -> list[dict]:
-    path = ensure_todo_tasks_file()
+def load_todo_tasks_from_path(path: str) -> list[dict]:
     with TODO_FILE_LOCK:
         with open(path, "r", encoding="utf-8") as f:
             content = f.read()
@@ -589,6 +625,47 @@ def load_todo_tasks() -> list[dict]:
         end = matches[index + 1].start() if index + 1 < len(matches) else len(content)
         tasks.append(parse_todo_task_block(match.group(1), content[start:end]))
     return tasks
+
+
+def load_todo_history_tasks() -> list[dict]:
+    archive_dir = get_todo_archive_dir()
+    if not os.path.isdir(archive_dir):
+        return []
+    tasks = []
+    for name in sorted(os.listdir(archive_dir)):
+        if not re.fullmatch(r"history-\d{4}\.md", name):
+            continue
+        tasks.extend(load_todo_tasks_from_path(os.path.join(archive_dir, name)))
+    return tasks
+
+
+def list_todo_history_years() -> list[str]:
+    archive_dir = get_todo_archive_dir()
+    if not os.path.isdir(archive_dir):
+        return []
+    years = []
+    for name in sorted(os.listdir(archive_dir)):
+        match = re.fullmatch(r"history-(\d{4})\.md", name)
+        if match:
+            years.append(match.group(1))
+    return years
+
+
+def merge_todo_tasks(tasks: list[dict]) -> list[dict]:
+    merged = {}
+    for task in tasks:
+        task_id = task.get("id")
+        if task_id:
+            merged[task_id] = task
+    return list(merged.values())
+
+
+def load_todo_tasks(include_history: bool = False) -> list[dict]:
+    path = ensure_todo_tasks_file()
+    active_tasks = load_todo_tasks_from_path(path)
+    if not include_history:
+        return active_tasks
+    return merge_todo_tasks(load_todo_history_tasks() + active_tasks)
 
 
 def serialize_todo_task(task: dict) -> str:
@@ -675,16 +752,37 @@ def build_todo_markdown_overview(tasks: list[dict]) -> str:
     return "\n".join(lines).rstrip()
 
 
-def save_todo_tasks(tasks: list[dict]):
+def save_todo_tasks(tasks: list[dict], rewrite_history: bool = False):
     path = ensure_todo_tasks_file()
     tmp_path = path + ".tmp"
+    tasks = merge_todo_tasks(tasks)
+    active_tasks = [task for task in tasks if task.get("status") == "open"]
+    archived_tasks = [task for task in tasks if task.get("status") != "open"]
     content = todo_empty_file_content().rstrip() + "\n\n"
     content += build_todo_markdown_overview(tasks) + "\n\n"
-    content += "\n".join(serialize_todo_task(task) for task in tasks)
+    content += "\n".join(serialize_todo_task(task) for task in active_tasks)
     with TODO_FILE_LOCK:
         with open(tmp_path, "w", encoding="utf-8") as f:
             f.write(content)
         os.replace(tmp_path, path)
+        archived_by_year = {}
+        for task in archived_tasks:
+            created_at = task.get("created_at") or task.get("updated_at") or now_text()
+            match = re.match(r"(\d{4})", created_at)
+            year = match.group(1) if match else str(datetime.now().year)
+            archived_by_year.setdefault(year, []).append(task)
+        history_years = set(archived_by_year)
+        if rewrite_history:
+            history_years.update(list_todo_history_years())
+        for year in sorted(history_years):
+            year_tasks = archived_by_year.get(year, [])
+            history_path = ensure_todo_history_file(year)
+            history_tmp_path = history_path + ".tmp"
+            history_content = todo_history_empty_file_content(year).rstrip() + "\n\n"
+            history_content += "\n".join(serialize_todo_task(task) for task in sort_todo_tasks(year_tasks))
+            with open(history_tmp_path, "w", encoding="utf-8") as f:
+                f.write(history_content)
+            os.replace(history_tmp_path, history_path)
 
 
 def parse_todo_due(text: str) -> str:
@@ -703,6 +801,25 @@ def parse_todo_due(text: str) -> str:
     if "月底" in text:
         next_month = today.replace(day=28) + timedelta(days=4)
         return (next_month - timedelta(days=next_month.day)).isoformat()
+    weekday_match = re.search(r"(下[週周禮拜星期]*)?([週周]|星期|禮拜)([一二三四五六日天])", text)
+    if weekday_match:
+        weekday_map = {
+            "一": 0,
+            "二": 1,
+            "三": 2,
+            "四": 3,
+            "五": 4,
+            "六": 5,
+            "日": 6,
+            "天": 6,
+        }
+        target_weekday = weekday_map[weekday_match.group(3)]
+        days_ahead = target_weekday - today.weekday()
+        if days_ahead < 0:
+            days_ahead += 7
+        if weekday_match.group(1):
+            days_ahead += 7
+        return (today + timedelta(days=days_ahead)).isoformat()
     match = re.search(r"\b(20\d{2}-\d{2}-\d{2})\b", text)
     if match:
         return match.group(1)
@@ -757,6 +874,15 @@ def infer_todo_project(text: str) -> str:
     return ""
 
 
+def parse_todo_owner(text: str) -> str:
+    for line in text.splitlines():
+        match = re.match(r"^\s*(?:owner|Owner|OWNER|負責人)\s*[:：]?\s*(.+?)\s*$", line)
+        if match:
+            owner = re.sub(r"[，,。；;]+$", "", match.group(1).strip())
+            return owner
+    return "maintainer"
+
+
 def next_todo_id(tasks: list[dict]) -> str:
     prefix = "T" + datetime.now().strftime("%Y%m%d")
     max_seq = 0
@@ -770,7 +896,7 @@ def next_todo_id(tasks: list[dict]) -> str:
 
 def create_todo_task(content: str) -> dict:
     with TODO_FILE_LOCK:
-        tasks = load_todo_tasks()
+        tasks = load_todo_tasks(include_history=True)
         now = now_text()
         task = {
             "id": next_todo_id(tasks),
@@ -778,7 +904,7 @@ def create_todo_task(content: str) -> dict:
             "type": infer_todo_type(content),
             "project": infer_todo_project(content),
             "content": content.strip(),
-            "owner": "maintainer",
+            "owner": parse_todo_owner(content),
             "due": parse_todo_due(content),
             "created_at": now,
             "updated_at": now,
@@ -786,12 +912,12 @@ def create_todo_task(content: str) -> dict:
             "reports": [],
         }
         tasks.append(task)
-        save_todo_tasks(tasks)
+        save_todo_tasks(tasks, rewrite_history=True)
         return task
 
 
 def find_todo_task(task_id: str) -> dict | None:
-    for task in load_todo_tasks():
+    for task in load_todo_tasks(include_history=True):
         if task.get("id") == task_id:
             return task
     return None
@@ -799,7 +925,7 @@ def find_todo_task(task_id: str) -> dict | None:
 
 def update_todo_task_status(task_id: str, status: str) -> dict | None:
     with TODO_FILE_LOCK:
-        tasks = load_todo_tasks()
+        tasks = load_todo_tasks(include_history=True)
         target = None
         for task in tasks:
             if task.get("id") == task_id:
@@ -808,13 +934,13 @@ def update_todo_task_status(task_id: str, status: str) -> dict | None:
                 target = task
                 break
         if target:
-            save_todo_tasks(tasks)
+            save_todo_tasks(tasks, rewrite_history=True)
         return target
 
 
 def append_todo_report(task_id: str, report_text: str) -> dict | None:
     with TODO_FILE_LOCK:
-        tasks = load_todo_tasks()
+        tasks = load_todo_tasks(include_history=True)
         target = None
         for task in tasks:
             if task.get("id") == task_id:
@@ -823,7 +949,7 @@ def append_todo_report(task_id: str, report_text: str) -> dict | None:
                 target = task
                 break
         if target:
-            save_todo_tasks(tasks)
+            save_todo_tasks(tasks, rewrite_history=True)
         return target
 
 
@@ -2205,7 +2331,7 @@ def start_todo_report_mode(reply_token: str, user_id: str, task_id: str):
 @app.get("/api/todos")
 def get_todos(token: str = ""):
     verify_todo_dashboard_token(token)
-    tasks = sorted(load_todo_tasks(), key=todo_dashboard_sort_key)
+    tasks = sorted(load_todo_tasks(include_history=True), key=todo_dashboard_sort_key)
     return {
         "stats": build_todo_dashboard_stats(tasks),
         "tasks": [todo_task_to_api(task) for task in tasks],
@@ -2222,7 +2348,7 @@ async def update_todo_status_from_dashboard(task_id: str, request: Request, toke
     task = update_todo_task_status(task_id, status)
     if not task:
         raise HTTPException(status_code=404, detail="Todo task not found")
-    return {"task": todo_task_to_api(task), "stats": build_todo_dashboard_stats(load_todo_tasks())}
+    return {"task": todo_task_to_api(task), "stats": build_todo_dashboard_stats(load_todo_tasks(include_history=True))}
 
 
 @app.post("/api/todos/{task_id}/report")
@@ -2235,7 +2361,7 @@ async def add_todo_report_from_dashboard(task_id: str, request: Request, token: 
     task = append_todo_report(task_id, report_text)
     if not task:
         raise HTTPException(status_code=404, detail="Todo task not found")
-    return {"task": todo_task_to_api(task), "stats": build_todo_dashboard_stats(load_todo_tasks())}
+    return {"task": todo_task_to_api(task), "stats": build_todo_dashboard_stats(load_todo_tasks(include_history=True))}
 
 
 @app.get("/todos", response_class=HTMLResponse)
