@@ -52,7 +52,7 @@ OpenAI Codex for OSS 申請相關 — 這個專案的開發本身就是 AI workf
 ## Setup
 
 ```bash
-git clone https://github.com/maintainer/obsidian-line-bot.git
+git clone https://github.com/ian3563867-commits/obsidian-line-bot.git
 cd obsidian-line-bot
 pip install -r requirements.txt
 cp .env.example .env
