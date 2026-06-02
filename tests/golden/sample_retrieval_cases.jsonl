@@ -1,0 +1,7 @@
+{"query": "index", "expected_path": "index.md", "stage": "precheck", "note": "命中 index 關鍵字"}
+{"query": "首頁", "expected_path": "index.md", "stage": "precheck", "note": "首頁同義字"}
+{"query": "SampleProjectA 問題追蹤", "expected_path": "02_Projects/SampleProjectA/issue-tracking.md", "stage": "precheck", "note": "專案名 + 子題命中"}
+{"query": "SampleProjectA open item", "expected_path": "02_Projects/SampleProjectA/issue-tracking.md", "stage": "precheck", "note": "open item 同義"}
+{"query": "今天的 daily", "expected_path": "03_Daily/20260101-daily-report.md", "stage": "precheck", "note": "daily 關鍵字 + 最新一份"}
+{"query": "WMS 查詢有哪些常見實體", "expected_path": "04_Knowledge/wms-query-concepts.md", "stage": "precheck", "note": "知識頁命中"}
+{"query": "ALERTSYS 通知量爆量", "expected_path": "02_Projects/SampleProjectA/issue-tracking.md", "stage": "llm_fallback", "note": "需 LLM 找到 OI-003 段落"}
