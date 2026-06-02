@@ -483,6 +483,7 @@ def run():
     assert "## 待辦總覽" in todo_content
     assert "## 機器資料區" in todo_content
     assert "SampleProjectA小數防呆明天問 Mark" in todo_content
+    assert "| 期限 | 專案 | 負責人 | 內容 | ID |" in todo_content
     assert "- status: open" in todo_content
     assert "- due:" in todo_content
     created_task = main.load_todo_tasks()[0]
@@ -611,6 +612,9 @@ def run():
     assert "data-delete" in dashboard_response.text
     assert "data-report" in dashboard_response.text
     assert "data-copy" in dashboard_response.text
+    assert "owner-chip" in dashboard_response.text
+    assert "task.owner || \"maintainer\"" in dashboard_response.text
+    assert "task.latest_report.reporter || \"maintainer\"" in dashboard_response.text
     assert "class=\"workspace\"" in dashboard_response.text
     assert "class=\"task-list\"" in dashboard_response.text
     assert "class=\"detail-panel\"" in dashboard_response.text
@@ -648,6 +652,13 @@ def run():
     )
     assert report_from_dashboard.status_code == 200
     assert main.find_todo_task(second_task_id)["reports"][-1]["content"] == "Dashboard 補充回報"
+    assert main.find_todo_task(second_task_id)["reports"][-1]["reporter"] == "maintainer"
+    report_with_reporter = client.post(
+        f"/api/todos/{second_task_id}/report?token=todo-dashboard-secret",
+        json={"content": "Dashboard 補充回報", "reporter": "John"},
+    )
+    assert report_with_reporter.status_code == 200
+    assert main.find_todo_task(second_task_id)["reports"][-1]["reporter"] == "John"
     send_event(
         client,
         {
@@ -669,6 +680,49 @@ def run():
     assert main.parse_todo_due("2026/06/01 前確認") == "2026-06-01"
     assert main.parse_todo_due("周三下班前完成") == (datetime.now().date() + main.timedelta(days=(2 - datetime.now().date().weekday()) % 7)).isoformat()
     assert main.parse_todo_owner("owner john\nSampleProjectA專案\n周三下班前完成") == "john"
+
+    legacy_block = (
+        "\n"
+        "- status: open\n"
+        "- type: work\n"
+        "- project: -\n"
+        "- owner: maintainer\n"
+        "- due: \n"
+        "- created_at: 2026-06-02 09:00:00\n"
+        "- updated_at: 2026-06-02 09:00:00\n"
+        "- source: line_bot\n"
+        "\n"
+        "### 內容\n"
+        "舊格式測試\n"
+        "\n"
+        "### 回報紀錄\n"
+        "- 2026-06-02 10:00:00：舊格式內容\n"
+    )
+    legacy_task = main.parse_todo_task_block("T20260602-901", legacy_block)
+    assert legacy_task["reports"] == [
+        {"created_at": "2026-06-02 10:00:00", "reporter": "maintainer", "content": "舊格式內容"}
+    ]
+    new_block = (
+        "\n"
+        "- status: open\n"
+        "- type: work\n"
+        "- project: -\n"
+        "- owner: maintainer\n"
+        "- due: \n"
+        "- created_at: 2026-06-02 09:00:00\n"
+        "- updated_at: 2026-06-02 09:00:00\n"
+        "- source: line_bot\n"
+        "\n"
+        "### 內容\n"
+        "新格式測試\n"
+        "\n"
+        "### 回報紀錄\n"
+        "- 2026-06-02 10:00:00｜John：新格式內容\n"
+    )
+    new_task = main.parse_todo_task_block("T20260602-902", new_block)
+    assert new_task["reports"] == [
+        {"created_at": "2026-06-02 10:00:00", "reporter": "John", "content": "新格式內容"}
+    ]
 
     bulk_tasks = main.load_todo_tasks()
     today = datetime.now().date().isoformat()

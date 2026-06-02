@@ -604,8 +604,18 @@ def parse_todo_task_block(task_id: str, block: str) -> dict:
         reports = []
         for line in reports_match.group(1).splitlines():
             match = re.match(r"-\s+(.+?)：(.+)", line.strip())
-            if match:
-                reports.append({"created_at": match.group(1).strip(), "content": match.group(2).strip()})
+            if not match:
+                continue
+            head = match.group(1).strip()
+            content = match.group(2).strip()
+            if "｜" in head:
+                created_at, reporter = head.split("｜", 1)
+                created_at = created_at.strip()
+                reporter = reporter.strip() or "maintainer"
+            else:
+                created_at = head
+                reporter = "maintainer"
+            reports.append({"created_at": created_at, "reporter": reporter, "content": content})
         task["reports"] = reports
     for line in block.splitlines():
         match = re.match(r"-\s+([a-z_]+):\s*(.*)", line.strip())
@@ -671,7 +681,8 @@ def load_todo_tasks(include_history: bool = False) -> list[dict]:
 def serialize_todo_task(task: dict) -> str:
     reports = task.get("reports") or []
     report_lines = ["尚無回報紀錄"] if not reports else [
-        f"- {report.get('created_at', '')}：{report.get('content', '')}" for report in reports
+        f"- {report.get('created_at', '')}｜{report.get('reporter') or 'maintainer'}：{report.get('content', '')}"
+        for report in reports
     ]
     return "\n".join(
         [
@@ -730,12 +741,13 @@ def build_todo_markdown_overview(tasks: list[dict]) -> str:
         if not section_tasks:
             lines.extend(["目前沒有任務。", ""])
             continue
-        lines.extend(["| 期限 | 專案 | 內容 | ID |", "|---|---|---|---|"])
+        lines.extend(["| 期限 | 專案 | 負責人 | 內容 | ID |", "|---|---|---|---|---|"])
         for task in section_tasks:
             lines.append(
-                "| {due} | {project} | {content} | `{task_id}` |".format(
+                "| {due} | {project} | {owner} | {content} | `{task_id}` |".format(
                     due=escape_markdown_table_cell(task.get("due") or "-"),
                     project=escape_markdown_table_cell(task.get("project") or "-"),
+                    owner=escape_markdown_table_cell(task.get("owner") or "maintainer"),
                     content=escape_markdown_table_cell(todo_content_preview(task.get("content", ""))),
                     task_id=escape_markdown_table_cell(task.get("id", "")),
                 )
@@ -938,13 +950,16 @@ def update_todo_task_status(task_id: str, status: str) -> dict | None:
         return target
 
 
-def append_todo_report(task_id: str, report_text: str) -> dict | None:
+def append_todo_report(task_id: str, report_text: str, reporter: str = "maintainer") -> dict | None:
+    reporter_value = (reporter or "").strip() or "maintainer"
     with TODO_FILE_LOCK:
         tasks = load_todo_tasks(include_history=True)
         target = None
         for task in tasks:
             if task.get("id") == task_id:
-                task.setdefault("reports", []).append({"created_at": now_text(), "content": report_text.strip()})
+                task.setdefault("reports", []).append(
+                    {"created_at": now_text(), "reporter": reporter_value, "content": report_text.strip()}
+                )
                 task["updated_at"] = now_text()
                 target = task
                 break
@@ -984,7 +999,15 @@ def build_todo_dashboard_stats(tasks: list[dict]) -> dict:
 
 
 def todo_task_to_api(task: dict) -> dict:
-    reports = task.get("reports") or []
+    raw_reports = task.get("reports") or []
+    reports = [
+        {
+            "created_at": report.get("created_at", ""),
+            "reporter": report.get("reporter") or "maintainer",
+            "content": report.get("content", ""),
+        }
+        for report in raw_reports
+    ]
     return {
         "id": task.get("id", ""),
         "status": task.get("status", "open"),
@@ -2356,9 +2379,10 @@ async def add_todo_report_from_dashboard(task_id: str, request: Request, token: 
     verify_todo_dashboard_token(token)
     payload = await request.json()
     report_text = str(payload.get("content", "")).strip()
+    reporter = str(payload.get("reporter", "") or "").strip() or "maintainer"
     if not report_text:
         raise HTTPException(status_code=400, detail="report content is required")
-    task = append_todo_report(task_id, report_text)
+    task = append_todo_report(task_id, report_text, reporter)
     if not task:
         raise HTTPException(status_code=404, detail="Todo task not found")
     return {"task": todo_task_to_api(task), "stats": build_todo_dashboard_stats(load_todo_tasks(include_history=True))}
@@ -2658,7 +2682,7 @@ def todos_dashboard(token: str = ""):
     .due.hot {{
       color: var(--warn);
     }}
-    .due-chip, .project-chip {{
+    .due-chip, .project-chip, .owner-chip {{
       display: inline-flex;
       align-items: center;
       min-height: 24px;
@@ -2671,6 +2695,9 @@ def todos_dashboard(token: str = ""):
     }}
     .project-chip {{
       background: #f3f5ef;
+    }}
+    .owner-chip {{
+      background: #eef3fb;
     }}
     .content, .detail-content {{
       line-height: 1.55;
@@ -3083,6 +3110,7 @@ def todos_dashboard(token: str = ""):
                 <span class="${{dueClass}}">${{escapeHtml(compactDate(task.due))}}</span>
                 ${{overdueText(task)}}
                 <span class="project-chip">${{escapeHtml(task.project || "未分類")}}</span>
+                <span class="owner-chip">${{escapeHtml(task.owner || "maintainer")}}</span>
               </div>
               <span class="task-id">${{escapeHtml(task.id)}}</span>
             </div>
@@ -3108,7 +3136,7 @@ def todos_dashboard(token: str = ""):
       const dueClass = task.is_due && task.status === "open" ? "due-chip due hot" : "due-chip due";
       const latestReport = task.latest_report ? `
         <div class="report-box">
-          <div>${{escapeHtml(task.latest_report.created_at || "-")}}　${{escapeHtml(task.owner || "maintainer")}}</div>
+          <div>${{escapeHtml(task.latest_report.created_at || "-")}}　${{escapeHtml(task.latest_report.reporter || "maintainer")}}</div>
           <div>${{escapeHtml(task.latest_report.content)}}</div>
         </div>
       ` : '<div class="report-box">尚無回報</div>';
@@ -3222,12 +3250,12 @@ def todos_dashboard(token: str = ""):
       await loadTodos();
     }};
 
-    const addTaskReport = async (taskId, content) => {{
+    const addTaskReport = async (taskId, content, reporter) => {{
       setStatus("寫入回報中...");
       const response = await fetch(`/api/todos/${{encodeURIComponent(taskId)}}/report?token=${{encodeURIComponent(token)}}`, {{
         method: "POST",
         headers: {{"Content-Type": "application/json"}},
-        body: JSON.stringify({{content}})
+        body: JSON.stringify({{content, reporter}})
       }});
       if (!response.ok) {{
         setStatus("回報寫入失敗，已重新整理");
@@ -3285,8 +3313,11 @@ def todos_dashboard(token: str = ""):
         const taskId = reportButton.dataset.report;
         const content = prompt("輸入這筆待辦的回報內容");
         if (!content || !content.trim()) return;
+        const reporterInput = prompt("回報人", "maintainer");
+        if (reporterInput === null) return;
+        const reporter = reporterInput.trim() || "maintainer";
         reportButton.disabled = true;
-        await addTaskReport(taskId, content.trim());
+        await addTaskReport(taskId, content.trim(), reporter);
         return;
       }}
       const copyButton = event.target.closest("[data-copy]");
